@@ -1,0 +1,87 @@
+{
+  "tools": [
+    {
+      "name": "process_documents",
+      "title": "Process Documents",
+      "description": "Parse PDFs, Office documents, and spreadsheets, then return JSON structured according to a prompt or provided schema.",
+      "command": "node ./src/tools/process-documents.mjs",
+      "inputSchema": {
+        "files": {
+          "type": "array",
+          "description": "List of documents to ingest. Each entry may be a string path or an object with metadata.",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Relative or absolute path to the source file."
+              },
+              "label": {
+                "type": "string",
+                "description": "Friendly name for the document.",
+                "optional": true
+              },
+              "type": {
+                "type": "string",
+                "description": "Document type override.",
+                "enum": ["pdf", "txt", "doc", "docx", "xlsx", "xls"],
+                "optional": true
+              }
+            },
+            "required": ["path"],
+            "additionalProperties": false
+          }
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Natural language instructions describing what to extract or update.",
+          "optional": true
+        },
+        "schema": {
+          "type": "object",
+          "description": "JSON schema object that the response should follow.",
+          "optional": true
+        },
+        "schemaString": {
+          "type": "string",
+          "description": "Stringified JSON schema (used when objects cannot be passed directly).",
+          "optional": true
+        },
+        "existingData": {
+          "type": "object",
+          "description": "Existing JSON data to update when mode is 'update'.",
+          "optional": true
+        },
+        "mode": {
+          "type": "string",
+          "description": "Extraction mode.",
+          "enum": ["extract", "update"],
+          "optional": true
+        },
+        "options": {
+          "type": "object",
+          "description": "Advanced options controlling preprocessing and output.",
+          "optional": true,
+          "properties": {
+            "maxPreviewChars": {
+              "type": "number",
+              "description": "Limit document preview length included in LLM prompts.",
+              "optional": true
+            },
+            "tableSampleRows": {
+              "type": "number",
+              "description": "How many rows per sheet to include in the LLM prompt.",
+              "optional": true
+            },
+            "includeRaw": {
+              "type": "boolean",
+              "description": "Whether to return trimmed plain-text previews alongside structured output.",
+              "optional": true
+            }
+          }
+        }
+      }
+    }
+  ]
+}
