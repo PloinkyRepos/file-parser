@@ -15,6 +15,12 @@ ploinky start
 
 The container image uses Node 22. Set `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, or another supported credential before launching the agent if you want LLM-backed structuring.
 
+## Helper Scripts
+
+- `scripts/installPrerequisites.sh` installs native helpers such as `antiword` that the `.doc` loader relies on; run it before building custom containers or local Node images.
+- `scripts/startFileParserDevel.sh` registers the repo with Ploinky, enables the `file-parser` agent, syncs any present LLM keys from your shell, and starts the container.
+- `scripts/startFileParser.sh <payload.json|->` loads `.ploinky/.secrets` variables (when available) and pipes a payload into `process_documents` for quick local reproduction of router calls.
+
 ## MCP Tool: `process_documents`
 
 Send a POST request to the router once the workspace is running:
