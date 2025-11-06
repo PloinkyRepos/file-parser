@@ -206,17 +206,35 @@ export function prepareCoralFlowData(json = {}, { documents = [] } = {}) {
         )
         .filter(Boolean);
 
-    const job = normalizeJob(json.job || {}, { documentNames });
+    // Handle case where LLM returns data in sections format with raw JSON string
+    let coralFlowData = json;
+    if (
+        !json.job &&
+        Array.isArray(json.sections) &&
+        json.sections.length > 0 &&
+        typeof json.sections[0].raw === "string"
+    ) {
+        try {
+            const parsed = JSON.parse(json.sections[0].raw);
+            if (parsed && typeof parsed === "object" && parsed.job) {
+                coralFlowData = parsed;
+            }
+        } catch (error) {
+            // If parsing fails, continue with original json
+        }
+    }
+
+    const job = normalizeJob(coralFlowData.job || {}, { documentNames });
     if (!job.job_id) {
         warnings.push("Job ID was not detected in the source material.");
     }
 
-    const rawMaterials = Array.isArray(json.materials)
-        ? json.materials
-        : Array.isArray(json.items)
-          ? json.items
-          : Array.isArray(json.records)
-            ? json.records
+    const rawMaterials = Array.isArray(coralFlowData.materials)
+        ? coralFlowData.materials
+        : Array.isArray(coralFlowData.items)
+          ? coralFlowData.items
+          : Array.isArray(coralFlowData.records)
+            ? coralFlowData.records
             : [];
 
     const materials = [];
@@ -238,11 +256,18 @@ export function prepareCoralFlowData(json = {}, { documents = [] } = {}) {
         materials.push(normalized);
     });
 
-    const summary = typeof json.summary === "string" ? json.summary.trim() : "";
-    const assumptions = Array.isArray(json.assumptions)
-        ? json.assumptions.map((entry) => String(entry).trim()).filter(Boolean)
+    const summary =
+        typeof coralFlowData.summary === "string"
+            ? coralFlowData.summary.trim()
+            : "";
+    const assumptions = Array.isArray(coralFlowData.assumptions)
+        ? coralFlowData.assumptions
+              .map((entry) => String(entry).trim())
+              .filter(Boolean)
         : [];
-    const references = Array.isArray(json.references) ? json.references : [];
+    const references = Array.isArray(coralFlowData.references)
+        ? coralFlowData.references
+        : [];
 
     const operations = [];
     if (job.job_id) {
