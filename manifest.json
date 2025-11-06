@@ -1,6 +1,6 @@
 {
     "container": "docker.io/library/node:22-bullseye",
-    "install": "npm install --omit=dev",
+    "install": "./scripts/installPrerequisites.sh && npm install --omit=dev",
     "update": "npm update --omit=dev",
     "env": [
         "OPENAI_API_KEY",
