@@ -9,8 +9,8 @@
   "dependencies": {
     "mammoth": "^1.11.0",
     "pdf-parse": "^2.4.5",
-    "ploinky-agent-lib": "file:./ploinky/node_modules/ploinkyAgentLib",
     "word-extractor": "^1.0.4",
+    "achillesAgentLib": "github:OutfinityResearch/achillesAgentLib#main",
     "xlsx": "^0.18.5"
   }
 }
