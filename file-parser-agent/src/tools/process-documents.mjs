@@ -3,7 +3,6 @@ import { exit } from "node:process";
 import { readJsonFromStdin } from "../utils/read-stdin.mjs";
 import { loadDocuments } from "../lib/document-loader.mjs";
 import { hasLlmAccess, runStructuredExtraction } from "../lib/llm-runner.mjs";
-import { prepareCoralFlowData } from "../lib/profiles/coral-flow.mjs";
 
 function normaliseInput(payload) {
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -24,12 +23,50 @@ function normaliseInput(payload) {
     return clone;
 }
 
-function extractFiles(input) {
-    if (!input) return [];
-    if (Array.isArray(input.files)) return input.files;
-    if (Array.isArray(input.documents)) return input.documents;
-    if (Array.isArray(input.paths)) return input.paths;
-    return [];
+function extractFileDescriptor(input) {
+    if (!input || typeof input !== "object") {
+        return null;
+    }
+
+    if (typeof input.file === "string" && input.file.trim()) {
+        return {
+            path: input.file.trim(),
+            label:
+                typeof input.fileLabel === "string"
+                    ? input.fileLabel.trim()
+                    : typeof input.label === "string"
+                      ? input.label.trim()
+                      : undefined,
+        };
+    }
+
+    const legacyLists = input.files || input.documents || input.paths;
+    if (Array.isArray(legacyLists)) {
+        if (legacyLists.length !== 1) {
+            throw new Error(
+                "process_documents now accepts exactly one file entry.",
+            );
+        }
+        const entry = legacyLists[0];
+        if (typeof entry === "string" && entry.trim()) {
+            return { path: entry.trim() };
+        }
+        if (entry && typeof entry === "object" && typeof entry.path === "string") {
+            const descriptor = { path: entry.path };
+            if (typeof entry.label === "string") {
+                descriptor.label = entry.label;
+            }
+            if (typeof entry.type === "string") {
+                descriptor.type = entry.type;
+            }
+            return descriptor;
+        }
+        throw new Error(
+            "Invalid file descriptor. Provide a path string or { path } object.",
+        );
+    }
+
+    return null;
 }
 
 function resolveOptions(inputOptions = {}) {
@@ -46,162 +83,61 @@ function resolveOptions(inputOptions = {}) {
             Math.floor(options.tableSampleRows),
         );
     }
-    if (typeof options.profile === "string") {
-        options.profile = options.profile.trim().toLowerCase();
-    }
     return options;
 }
 
-function projectDocuments(documents, { includeRaw = false } = {}) {
-    return documents.map((doc) => ({
-        path: doc.path,
-        label: doc.label,
-        type: doc.type,
-        checksum: doc.checksum,
-        stats: doc.stats,
-        summary: doc.summary,
-        tables: doc.tables,
-        rawText: includeRaw ? doc.text : undefined,
-    }));
-}
-
-function guessProvider() {
-    if (process.env.OPENAI_API_KEY) return "openai";
-    if (process.env.OPENROUTER_API_KEY) return "openrouter";
-    if (process.env.ANTHROPIC_API_KEY) return "anthropic";
-    if (process.env.GEMINI_API_KEY) return "gemini";
-    if (process.env.MISTRAL_API_KEY) return "mistral";
-    if (process.env.DEEPSEEK_API_KEY) return "deepseek";
-    if (process.env.LLM_API_KEY) return "generic";
-    return null;
-}
-
-function normalizeProfile(value) {
-    if (!value || typeof value !== "string") {
-        return null;
-    }
-    const lowered = value.trim().toLowerCase();
-    if (!lowered) {
-        return null;
-    }
-    return lowered;
+function emitWarnings(warnings = []) {
+    warnings.forEach((warning) => {
+        if (!warning) {
+            return;
+        }
+        if (typeof warning === "object") {
+            const message = warning.message || JSON.stringify(warning);
+            const detail = warning.detail ? ` (${warning.detail})` : "";
+            console.error(`Warning: ${message}${detail}`);
+            return;
+        }
+        console.error(`Warning: ${warning}`);
+    });
 }
 
 async function main() {
     try {
         const payload = await readJsonFromStdin();
         const input = normaliseInput(payload || {});
-        const files = extractFiles(input);
-
-        if (!files.length) {
+        const descriptor = extractFileDescriptor(input);
+        if (!descriptor) {
             throw new Error(
-                'process_documents requires a non-empty "files" array.',
+                'process_documents requires a "file" path to parse.',
             );
         }
 
         const options = resolveOptions(input.options);
-        const profile = normalizeProfile(input.profile || options.profile);
-        const { documents, warnings } = await loadDocuments(files, {
-            workspaceRoot: input.workspaceRoot,
+        const { documents, warnings } = await loadDocuments([descriptor], {
             tableSampleRows: options.tableSampleRows,
             previewLimit: options.previewLimit,
         });
 
-        const includeRaw = Boolean(options.includeRaw);
-        const prompt = typeof input.prompt === "string" ? input.prompt : null;
-        const mode =
-            (typeof input.mode === "string"
-                ? input.mode.toLowerCase()
-                : "extract") === "update"
-                ? "update"
-                : "extract";
-
-        const execution = {
-            status: "fallback",
-            llm: { used: false, provider: null },
-            data: null,
-            raw: null,
-            warnings: [...warnings],
-            profile: null,
-        };
-
-        if (hasLlmAccess()) {
-            try {
-                const llmResult = await runStructuredExtraction({
-                    documents,
-                    prompt,
-                    schema: input.schema,
-                    schemaString: input.schemaString,
-                    existingData: input.existingData,
-                    mode,
-                    options: { includeRaw, profile },
-                });
-                execution.status = "ok";
-                execution.llm = { used: true, provider: guessProvider() };
-                execution.data = llmResult.json;
-                execution.raw = includeRaw ? llmResult.raw : undefined;
-                if (profile === "coralflow") {
-                    const coralFlow = prepareCoralFlowData(llmResult.json, {
-                        documents,
-                    });
-                    execution.profile = {
-                        name: "coralFlow",
-                        ...coralFlow,
-                    };
-                    if (
-                        Array.isArray(coralFlow.warnings) &&
-                        coralFlow.warnings.length
-                    ) {
-                        coralFlow.warnings.forEach((warning) => {
-                            execution.warnings.push({
-                                message: warning,
-                                detail: "coralFlow profile normalisation",
-                            });
-                        });
-                    }
-                }
-            } catch (error) {
-                execution.status = "degraded";
-                execution.llm = {
-                    used: true,
-                    provider: guessProvider(),
-                    error:
-                        error instanceof Error ? error.message : String(error),
-                };
-                execution.warnings.push({
-                    message:
-                        "LLM processing failed; returning document previews only.",
-                    detail: execution.llm.error,
-                });
-            }
-        } else {
-            execution.warnings.push({
-                message:
-                    "No LLM credentials detected; returning document previews only.",
-                detail: "Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or compatible credentials to enable structured extraction.",
-            });
+        if (warnings.length) {
+            emitWarnings(warnings);
         }
 
-        const result = {
-            status: execution.status,
-            generatedAt: new Date().toISOString(),
-            mode,
-            prompt,
-            provider: execution.llm.provider,
-            documents: projectDocuments(documents, { includeRaw }),
-            data: execution.data,
-            raw: execution.raw,
-            warnings: execution.warnings,
-            profile: execution.profile
-                ? execution.profile.name
-                : profile
-                  ? "coralFlow"
-                  : null,
-            persistoOperations: execution.profile?.operations || [],
-            profileResult: execution.profile || undefined,
-        };
+        if (!hasLlmAccess()) {
+            throw new Error(
+                "LLM credentials are required to run process_documents. Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or another supported key.",
+            );
+        }
 
-        console.log(JSON.stringify(result, null, 2));
+        const llmResult = await runStructuredExtraction({
+            documents,
+            options: { includeRaw: Boolean(options.includeRaw) },
+        });
+
+        const payloadToPrint =
+            typeof llmResult.json === "string"
+                ? llmResult.json
+                : JSON.stringify(llmResult.json || {}, null, 2);
+        console.log(payloadToPrint);
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(message);

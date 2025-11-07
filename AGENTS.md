@@ -2,14 +2,14 @@
 
 ## Project Structure & Module Organization
 - `manifest.json` and `mcp-config.json` define the agent container and the exposed `process_documents` MCP tool. Keep schema changes synchronized across both files.
-- `src/lib/` hosts focused utilities: document ingestion (`document-loader.mjs`), path helpers, LLM orchestration (`llm-runner.mjs`), and profile-specific normalisers under `src/lib/profiles/` (e.g., `coral-flow.mjs` prepares Persisto operations).
+- `src/lib/` hosts focused utilities: document ingestion (`document-loader.mjs`), path helpers, and LLM orchestration (`llm-runner.mjs`). CoralFlow-specific normalisation now lives in the coral agent (`coral-agent/lib/parsers/`).
 - `src/tools/process-documents.mjs` is the only executable entrypoint; it wires payload validation, ingestion, and structured extraction.
 - `tests/` contains Node’s built-in test runner suites plus lightweight fixtures under `tests/fixtures/` (avoid committing large binaries).
 
 ## Build, Test, and Development Commands
 - `npm install` resolves the local dependency set, including the vendored `ploinky-agent-lib` used for LLM access.
 - `npm test` runs `node --test` against `tests/**/*.test.mjs`; add regression coverage here for every new file type or output mode.
-- `node src/tools/process-documents.mjs < payload.json` is the quickest way to debug outside the container—pipe JSON on stdin and inspect the response (`profile: "coralFlow"` emits job/material records plus `persistoOperations`).
+- `node src/tools/process-documents.mjs < payload.json` is the quickest way to debug outside the container—pipe JSON on stdin and inspect the string response (single `file` input, JSON output).
 
 ## Coding Style & Naming Conventions
 - Stay with ES modules (`type: module`) and prefer small, pure helpers over large scripts. Use descriptive camelCase filenames beneath `src/lib/`.

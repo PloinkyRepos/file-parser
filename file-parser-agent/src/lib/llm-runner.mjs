@@ -1,8 +1,4 @@
-import { LLMAgent } from "ploinky-agent-lib";
-import {
-    CORAL_FLOW_OUTPUT_SCHEMA,
-    coralFlowInstructions,
-} from "./profiles/coral-flow.mjs";
+import { LLMAgent } from "achillesAgentLib";
 
 const DEFAULT_OUTPUT_SCHEMA = {
     type: "object",
@@ -47,29 +43,6 @@ const DEFAULT_OUTPUT_SCHEMA = {
     },
     additionalProperties: true,
 };
-
-function ensurePlainObject(value) {
-    return value && typeof value === "object" && !Array.isArray(value)
-        ? value
-        : null;
-}
-
-export function parseSchemaInput(schema, schemaString) {
-    if (ensurePlainObject(schema)) {
-        return schema;
-    }
-    if (schemaString && typeof schemaString === "string") {
-        try {
-            const parsed = JSON.parse(schemaString);
-            return ensurePlainObject(parsed) || null;
-        } catch (error) {
-            const message =
-                error instanceof Error ? error.message : String(error);
-            throw new Error(`Failed to parse schemaString: ${message}`);
-        }
-    }
-    return null;
-}
 
 export function hasLlmAccess() {
     return Boolean(
@@ -118,40 +91,17 @@ function buildDocumentContext(documents, { includeRaw = false } = {}) {
         .join("\n\n---\n\n");
 }
 
-function buildTaskDescription({
-    mode,
-    prompt,
-    existingData,
-    profileInstructions = "",
-}) {
-    const parts = [
-        prompt && prompt.trim()
-            ? prompt.trim()
-            : "Extract structured information that satisfies typical data analysis needs.",
-        mode === "update"
-            ? "Update the existing JSON data to satisfy the prompt while keeping consistent structure."
-            : "Produce new structured JSON data guided by the prompt.",
-        "Respond strictly with JSON and do not include commentary outside of JSON syntax.",
-    ];
+const DEFAULT_TASK_DESCRIPTION = `Extract structured data from the provided document previews.
 
-    if (existingData && Object.keys(existingData).length) {
-        parts.push(
-            `Existing data to revise: ${JSON.stringify(existingData, null, 2)}`,
-        );
-    }
-    if (profileInstructions) {
-        parts.push(profileInstructions);
-    }
-    return parts.filter(Boolean).join("\n\n");
-}
+- Summarise key points relevant to project operations.
+- Capture tabular or list-based facts under extractedRecords.
+- Record any recommendations under decisions.
+- Provide traceability in sourceMap linking back to document names/sections.
+
+Respond with a single string that contains only the structured data and no additional commentary.`;
 
 export async function runStructuredExtraction({
     documents,
-    prompt,
-    schema,
-    schemaString,
-    existingData,
-    mode = "extract",
     options = {},
 }) {
     if (!Array.isArray(documents) || !documents.length) {
@@ -166,45 +116,18 @@ export async function runStructuredExtraction({
         );
     }
 
-    const profile =
-        typeof options.profile === "string"
-            ? options.profile.trim().toLowerCase()
-            : null;
-
     const llmAgent = new LLMAgent({ name: "FileParserAgent" });
-    const documentContext = buildDocumentContext(documents, options);
-    const taskDescription = buildTaskDescription({
-        mode,
-        prompt,
-        existingData,
-        profileInstructions:
-            profile === "coralflow" ? coralFlowInstructions() : "",
+    const documentContext = buildDocumentContext(documents, {
+        includeRaw: Boolean(options?.includeRaw),
     });
-
-    let outputSchema;
-    try {
-        if (profile === "coralflow") {
-            outputSchema = CORAL_FLOW_OUTPUT_SCHEMA;
-        } else {
-            outputSchema =
-                parseSchemaInput(schema, schemaString) || DEFAULT_OUTPUT_SCHEMA;
-        }
-    } catch (error) {
-        throw new Error(
-            `Schema validation failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-    }
 
     const response = await llmAgent.doTask(
         {
-            prompt,
-            mode,
             documents: documentContext,
-            existingData,
         },
-        taskDescription,
+        DEFAULT_TASK_DESCRIPTION,
         {
-            outputSchema,
+            outputSchema: DEFAULT_OUTPUT_SCHEMA,
         },
     );
 
@@ -216,5 +139,5 @@ export async function runStructuredExtraction({
         throw new Error(`LLM response was not valid JSON: ${message}`);
     }
 
-    return { raw: response, json, profile };
+    return { raw: response, json };
 }

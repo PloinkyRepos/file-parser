@@ -1,6 +1,6 @@
 # file-parser
 
-Ploinky MCP agent that ingests PDFs, plain text, Word documents, and Excel workbooks, then returns structured JSON guided by a natural-language prompt or caller-supplied schema. The agent ships with a `process_documents` tool that can be invoked through the Ploinky router (`/mcps/<agent>/mcp`) or directly from the container.
+Ploinky MCP agent that ingests PDFs, plain text, Word documents, and Excel workbooks, then returns structured JSON using a fixed extraction prompt. The agent ships with a `process_documents` tool that can be invoked through the Ploinky router (`/mcps/<agent>/mcp`) or directly from the container.
 
 ## Quick Start
 
@@ -25,7 +25,7 @@ The container image uses Node 22. Set `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OP
 
 Send a POST request to the router once the workspace is running:
 
-```bash
+```bash 
 curl http://127.0.0.1:8080/mcps/file-parser/mcp \
   -H 'content-type: application/json' \
   -d '{
@@ -35,12 +35,7 @@ curl http://127.0.0.1:8080/mcps/file-parser/mcp \
     "params": {
       "name": "process_documents",
       "arguments": {
-        "files": [
-          {"path": "docs/quarterly-summary.pdf"},
-          {"path": "data/pipeline.xlsx", "type": "xlsx"}
-        ],
-        "prompt": "Produce a revenue summary and list blockers.",
-        "schemaString": "{\"type\":\"object\",\"properties\":{\"revenue\":{\"type\":\"string\"},\"blockers\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}}}"
+        "file": "docs/quarterly-summary.pdf"
       }
     }
   }'
@@ -50,13 +45,7 @@ If no LLM credentials are present the agent still returns per-document previews,
 
 ### Input options
 
-- `files` *(required)* — array of string paths or `{ path, label, type }` objects. Supported types: `pdf`, `txt`, `doc`, `docx`, `xlsx`, `xls`.
-- `prompt` *(optional)* — directs extraction or update behaviour.
-- `schema` / `schemaString` *(optional)* — JSON schema guiding the response payload.
-- `mode` *(optional)* — `"extract"` (default) or `"update"` when revising `existingData`.
-- `options.includeRaw` *(optional)* — include truncated plaintext in the response.
-- `options.tableSampleRows` *(optional)* — number of rows per sheet added to the prompt (default 15).
-- `options.profile` *(optional)* — pass `"coralFlow"` to emit job/material objects plus `persistoOperations` suited to coral-agent imports.
+- `file` *(required)* — string path to the single document to parse (absolute or relative to the agent workspace). Supported types: `pdf`, `txt`, `doc`, `docx`, `xlsx`, `xls`.
 
 ### Architecture Overview
 
@@ -88,12 +77,12 @@ If no LLM credentials are present the agent still returns per-document previews,
                                  └────────────────────────────────────┘
                                                    │
                                                    ▼
-                                     Structured JSON / profile payload
+                                     Structured JSON string payload
                                                    │
                                                    ▼
 ┌────────────────────────────┐          ┌───────────┴─────────────────┐
-│ Persisto-ready operations  │◄─────────┤   RoutingServer sends back  │
-│ (profileResult + data)     │          │   MCP response to the client│
+│ Structured JSON string     │◄─────────┤   RoutingServer sends back  │
+│ (built-in schema)          │          │   MCP response to the client│
 └────────────────────────────┘          └─────────────────────────────┘
 ```
 
@@ -111,11 +100,7 @@ curl http://127.0.0.1:8080/mcps/file-parser/mcp \
     "params": {
       "name": "process_documents",
       "arguments": {
-        "profile": "coralFlow",
-        "files": [
-          {"path": "/home/apparatus/Documents/coral docs/Angel materials - 16.04.25.docx"}
-        ],
-        "prompt": "Extract job/order identifiers and material requirements."
+        "file": "/home/apparatus/Documents/coral docs/Angel materials - 16.04.25.docx"
       }
     }
   }'
@@ -126,16 +111,7 @@ curl http://127.0.0.1:8080/mcps/file-parser/mcp \
 ```bash
 node src/tools/process-documents.mjs <<'EOF'
 {
-  "profile": "coralFlow",
-  "files": [
-    {"path": "docs/quarterly-summary.pdf"},
-    {"path": "data/order-lines.xlsx"}
-  ],
-  "prompt": "Summarise orders and required materials.",
-  "options": {
-    "includeRaw": false,
-    "tableSampleRows": 5
-  }
+  "file": "docs/quarterly-summary.pdf"
 }
 EOF
 ```
@@ -146,13 +122,9 @@ EOF
 2. Open the dashboard (`http://127.0.0.1:8080/dashboard`) and locate the *file-parser* entry.
 3. Issue a `tools/call` request through the MCP console with the same JSON payload as shown above.
 
-Setting `options.profile: "coralFlow"` (or top-level `profile: "coralFlow"`) instructs the tool to emit:
+The tool responds with a single text block containing structured JSON that matches the built-in extraction schema. Downstream automations (e.g., the coral agent) should parse that string and perform any domain-specific transformations.
 
-- `profileResult.job` – normalised order/job payload (`job_id`, `job_name`, `client_name`, `created_at`, ...).
-- `profileResult.materials` – array of materials with generated `material_id`, numeric `quantity`, and inherited `job_id`.
-- `persistoOperations` – ordered calls (`createJob`, `createMaterial`, …) ready to pipe into coralFlow automation.
-
-If the LLM cannot run, the response falls back to document previews while still indicating `profile: "coralFlow"` so downstream scripts can branch gracefully.
+If no supported LLM credential is configured, `process_documents` exits with an error so callers can retry after fixing configuration.
 
 ## Development
 
