@@ -1,6 +1,6 @@
 {
     "container": "docker.io/library/node:22.20-alpine",
-    "install": "/code/scripts/installPrerequisites.sh && npm install --omit=dev",
+    "install": "/code/scripts/installPrerequisites.sh && cd /code && npm install --omit=dev",
     "update": "npm update --omit=dev",
     "env": [
         "OPENAI_API_KEY",
