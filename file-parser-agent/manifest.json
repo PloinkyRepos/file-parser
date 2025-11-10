@@ -1,6 +1,7 @@
 {
     "container": "docker.io/library/node:22.20-alpine",
-    "install": "/code/scripts/installPrerequisites.sh && cp -r /code/src /code/package*.json . && sed \"s|\\\"cwd\\\": \\\".\\\"|\\\"cwd\\\": \\\"$(pwd)\\\"|\" /code/mcp-config.json > mcp-config.json && npm install --omit=dev",
+    "preinstall": "npm install",
+    "install": "/code/scripts/installPrerequisites.sh",
     "update": "npm update --omit=dev",
     "env": [
         "OPENAI_API_KEY",
