@@ -4,7 +4,7 @@
       "name": "process_documents",
       "title": "Process Documents",
       "description": "Parse PDFs, Office documents, and spreadsheets, then return JSON structured according to a prompt or provided schema.",
-      "command": "node /code/src/tools/process-documents.mjs",
+      "command": "node src/tools/process-documents.mjs",
       "inputSchema": {
         "file": {
           "type": "string",
