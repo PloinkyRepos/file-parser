@@ -2,7 +2,7 @@
 import { exit } from "node:process";
 import { readJsonFromStdin } from "../utils/read-stdin.mjs";
 import { loadDocuments } from "../lib/document-loader.mjs";
-import { hasLlmAccess, runStructuredExtraction } from "../lib/llm-runner.mjs";
+import { documentsToMarkdown } from "../lib/markdown-formatter.mjs";
 
 function normaliseInput(payload) {
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -122,22 +122,11 @@ async function main() {
             emitWarnings(warnings);
         }
 
-        if (!hasLlmAccess()) {
-            throw new Error(
-                "LLM credentials are required to run process_documents. Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or another supported key.",
-            );
-        }
-
-        const llmResult = await runStructuredExtraction({
-            documents,
-            options: { includeRaw: Boolean(options.includeRaw) },
+        const markdown = documentsToMarkdown(documents, {
+            includeRaw: Boolean(options.includeRaw),
         });
 
-        const payloadToPrint =
-            typeof llmResult.json === "string"
-                ? llmResult.json
-                : JSON.stringify(llmResult.json || {}, null, 2);
-        console.log(payloadToPrint);
+        console.log(markdown);
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(message);

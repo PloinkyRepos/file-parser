@@ -4,16 +4,7 @@
     "install": "/code/scripts/installPrerequisites.sh",
     "update": "npm update --omit=dev",
     "env": [
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "GEMINI_API_KEY",
-        "MISTRAL_API_KEY",
-        "DEEPSEEK_API_KEY",
-        "OPENROUTER_API_KEY",
-        "LLM_API_KEY",
-        "LLM_PROVIDER",
-        "LLM_MODEL",
         "WORKSPACE_PATH"
     ],
-    "about": "File Parser MCP agent. Extracts and structures content from PDFs, Office docs, and spreadsheets into JSON."
+    "about": "File Parser MCP agent. Extracts content from PDFs, Office docs, and spreadsheets and converts to Markdown."
 }
