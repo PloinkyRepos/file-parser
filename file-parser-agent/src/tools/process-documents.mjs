@@ -29,41 +29,22 @@ function extractFileDescriptor(input) {
     }
 
     if (typeof input.file === "string" && input.file.trim()) {
-        return {
+        const descriptor = {
             path: input.file.trim(),
-            label:
-                typeof input.fileLabel === "string"
-                    ? input.fileLabel.trim()
-                    : typeof input.label === "string"
-                      ? input.label.trim()
-                      : undefined,
         };
-    }
 
-    const legacyLists = input.files || input.documents || input.paths;
-    if (Array.isArray(legacyLists)) {
-        if (legacyLists.length !== 1) {
-            throw new Error(
-                "process_documents now accepts exactly one file entry.",
-            );
+        // Extract type hint if provided (supports both 'type' and 'fileType')
+        const typeHint =
+            typeof input.type === "string"
+                ? input.type
+                : typeof input.fileType === "string"
+                    ? input.fileType
+                    : undefined;
+        if (typeHint && typeHint.trim()) {
+            descriptor.type = typeHint.trim();
         }
-        const entry = legacyLists[0];
-        if (typeof entry === "string" && entry.trim()) {
-            return { path: entry.trim() };
-        }
-        if (entry && typeof entry === "object" && typeof entry.path === "string") {
-            const descriptor = { path: entry.path };
-            if (typeof entry.label === "string") {
-                descriptor.label = entry.label;
-            }
-            if (typeof entry.type === "string") {
-                descriptor.type = entry.type;
-            }
-            return descriptor;
-        }
-        throw new Error(
-            "Invalid file descriptor. Provide a path string or { path } object.",
-        );
+
+        return descriptor;
     }
 
     return null;

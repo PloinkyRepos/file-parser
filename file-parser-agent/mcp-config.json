@@ -4,11 +4,16 @@
       "name": "process_documents",
       "title": "Process Documents",
       "description": "Parse PDFs, Office documents, and spreadsheets and convert the content to Markdown format.",
-      "command": "node /code/src/tools/process-documents.mjs",
+      "command": "/code/src/tools/process-documents.mjs",
       "inputSchema": {
         "file": {
           "type": "string",
           "description": "Relative or absolute path to the single document to parse."
+        },
+        "type": {
+          "type": "string",
+          "optional": true,
+          "description": "File type hint (pdf, docx, xlsx, etc.) - required when file path has no extension."
         }
       }
     }
