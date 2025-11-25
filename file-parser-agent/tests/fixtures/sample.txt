@@ -1,0 +1,5 @@
+This is a sample text document for testing.
+It contains multiple lines of text.
+The file-parser-agent should be able to read this content correctly.
+
+This document is used for unit and integration testing.

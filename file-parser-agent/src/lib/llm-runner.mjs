@@ -1,4 +1,10 @@
-import { LLMAgent } from "achillesAgentLib";
+let LLMAgent = null;
+try {
+    const achillesAgentLib = await import("achillesAgentLib");
+    LLMAgent = achillesAgentLib.LLMAgent;
+} catch (error) {
+    // achillesAgentLib is optional - LLM features will be unavailable without it
+}
 
 const DEFAULT_OUTPUT_SCHEMA = {
     type: "object",
@@ -113,6 +119,12 @@ export async function runStructuredExtraction({
     if (!hasLlmAccess()) {
         throw new Error(
             "No LLM provider credentials detected. Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or another supported key.",
+        );
+    }
+
+    if (!LLMAgent) {
+        throw new Error(
+            "LLM functionality requires the 'achillesAgentLib' package to be installed.",
         );
     }
 

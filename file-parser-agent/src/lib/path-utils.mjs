@@ -13,6 +13,9 @@ export function resolveWorkspacePath(
         throw new Error("Expected file path to be a non-empty string.");
     }
     const trimmed = filePath.trim();
+    if (!trimmed) {
+        throw new Error("Expected file path to be a non-empty string.");
+    }
     const baseRoot =
         workspaceRoot && workspaceRoot.trim() ? workspaceRoot.trim() : cwd;
     const candidate = path.isAbsolute(trimmed)
@@ -24,6 +27,10 @@ export function resolveWorkspacePath(
 export async function assertFileReadable(filePath) {
     try {
         await fs.access(filePath, fs.constants.R_OK);
+        const stats = await fs.stat(filePath);
+        if (stats.isDirectory()) {
+            throw new Error("Path is a directory, not a file");
+        }
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(`Cannot read file '${filePath}': ${message}`);
