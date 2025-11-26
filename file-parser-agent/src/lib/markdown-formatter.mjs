@@ -11,27 +11,33 @@ function tableToMarkdown(table) {
     }
 
     const rows = table.sampleRows;
-    const headers = Object.keys(rows[0]);
+    // Keep original headers for data access
+    const originalHeaders = Object.keys(rows[0]);
+    // Sanitize headers for display: replace newlines and collapse whitespace
+    // to prevent multi-line headers from breaking Markdown table parsing
+    const sanitizedHeaders = originalHeaders.map(h =>
+        h.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim()
+    );
 
-    if (headers.length === 0) {
+    if (originalHeaders.length === 0) {
         return `### ${table.name}\n\n*No data*\n`;
     }
 
-    // Build header row
-    const headerRow = `| ${headers.join(' | ')} |`;
+    // Build header row using sanitized headers
+    const headerRow = `| ${sanitizedHeaders.join(' | ')} |`;
 
     // Build separator row
-    const separator = `| ${headers.map(() => '---').join(' | ')} |`;
+    const separator = `| ${sanitizedHeaders.map(() => '---').join(' | ')} |`;
 
-    // Build data rows
+    // Build data rows using original headers for data access
     const dataRows = rows.map(row => {
-        const cells = headers.map(header => {
+        const cells = originalHeaders.map(header => {
             const value = row[header];
             if (value === null || value === undefined) {
                 return '';
             }
-            // Escape pipe characters and convert to string
-            return String(value).replace(/\|/g, '\\|');
+            // Escape pipe characters and newlines, convert to string
+            return String(value).replace(/\|/g, '\\|').replace(/\n/g, ' ');
         });
         return `| ${cells.join(' | ')} |`;
     });

@@ -84,7 +84,7 @@ async function loadDoc(filePath) {
     return { type: "doc", text };
 }
 
-async function loadXlsx(filePath, { tableSampleRows = 15 } = {}) {
+async function loadXlsx(filePath, { tableSampleRows = 10000 } = {}) {
     const workbook = xlsxLib.readFile(filePath, { cellDates: true });
     const sheets = workbook.SheetNames.map((name) => {
         const sheet = workbook.Sheets[name];
