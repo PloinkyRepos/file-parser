@@ -1,10 +1,14 @@
 {
     "container": "docker.io/library/node:22.20-alpine",
-    "preinstall": "npm install",
-    "install": "/code/scripts/installPrerequisites.sh",
     "update": "npm update --omit=dev",
-    "env": [
-        "WORKSPACE_PATH"
-    ],
-    "about": "File Parser MCP agent. Extracts content from PDFs, Office docs, and spreadsheets and converts to Markdown."
+    "about": "File Parser MCP agent. Extracts content from PDFs, Office docs, and spreadsheets and converts to Markdown.",
+    "profiles": {
+        "default": {
+            "env": [
+                "WORKSPACE_PATH"
+            ],
+            "preinstall": "npm install",
+            "install": "/code/scripts/installPrerequisites.sh"
+        }
+    }
 }
