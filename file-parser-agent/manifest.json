@@ -7,8 +7,8 @@
             "env": [
                 "WORKSPACE_PATH"
             ],
-            "preinstall": "npm install",
-            "install": "/code/scripts/installPrerequisites.sh"
+            "preinstall": "/code/scripts/installPrerequisites.sh",
+            "install": "npm install"
         }
     }
 }
