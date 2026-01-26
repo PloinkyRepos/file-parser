@@ -7,7 +7,7 @@
             "env": [
                 "WORKSPACE_PATH"
             ],
-            "preinstall": "/code/scripts/installPrerequisites.sh"
+            "install": "/code/scripts/installPrerequisites.sh"
         }
     }
 }
