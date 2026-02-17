@@ -19,7 +19,7 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} bash -s << 'TEARDOWN'
             set -e
             WORKSPACE="$HOME/soulGateway"
-            PLOINKY="$HOME/ploinky/bin/ploinky"
+            PLOINKY="$(which ploinky 2>/dev/null || echo "$HOME/ploinky/bin/ploinky")"
 
             echo "=== Tearing down Soul Gateway ==="
 
