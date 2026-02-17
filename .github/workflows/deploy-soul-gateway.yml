@@ -1,0 +1,101 @@
+name: Deploy Soul Gateway
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'proxies/soul-gateway/**'
+      - 'proxies/soul-gateway-app/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy Soul Gateway
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "PGPASSWORD='${{ secrets.PGPASSWORD }}' DEFAULT_PROXY_API_KEY='${{ secrets.DEFAULT_PROXY_API_KEY }}' bash -s" << 'DEPLOY_SCRIPT'
+            set -e
+
+            WORKSPACE="$HOME/soulGateway"
+            PLOINKY="$HOME/ploinky/bin/ploinky"
+            REPO_URL="https://github.com/PloinkyRepos/file-parser.git"
+            REPO_DIR="$HOME/code/file-parser"
+
+            echo "=== Soul Gateway Deploy ==="
+
+            # Clone or pull the repo
+            if [ -d "$REPO_DIR/.git" ]; then
+              echo "Pulling latest code..."
+              cd "$REPO_DIR"
+              git fetch origin main
+              git reset --hard origin/main
+            else
+              echo "Cloning repo..."
+              mkdir -p "$(dirname "$REPO_DIR")"
+              git clone "$REPO_URL" "$REPO_DIR"
+            fi
+
+            # Create workspace
+            mkdir -p "$WORKSPACE"
+            cd "$WORKSPACE"
+
+            # Register repos with ploinky (symlink to avoid duplication)
+            if [ ! -d "$WORKSPACE/.ploinky/repos/proxies" ]; then
+              echo "Initializing ploinky workspace..."
+              mkdir -p "$WORKSPACE/.ploinky/repos"
+              ln -sfn "$REPO_DIR/proxies" "$WORKSPACE/.ploinky/repos/proxies"
+              ln -sfn "$REPO_DIR/basic" "$WORKSPACE/.ploinky/repos/basic"
+              echo '["basic","proxies"]' > "$WORKSPACE/.ploinky/enabled_repos.json"
+            fi
+
+            # Configure env vars
+            echo "Configuring env vars..."
+            $PLOINKY var UPSTREAM_URL "https://proxy.axiologic.dev"
+            $PLOINKY var PGHOST "host.containers.internal"
+            $PLOINKY var PGPORT "5432"
+            $PLOINKY var PGUSER "keycloak"
+            $PLOINKY var PGPASSWORD "$PGPASSWORD"
+            $PLOINKY var PGDATABASE "keycloak"
+            $PLOINKY var DEFAULT_PROXY_API_KEY "$DEFAULT_PROXY_API_KEY"
+
+            # Stop existing if running
+            if podman ps --format '{{.Names}}' 2>/dev/null | grep -q "soul-gateway.*soulGateway"; then
+              echo "Stopping existing soul-gateway..."
+              $PLOINKY stop soul-gateway 2>&1 || true
+              $PLOINKY clean soul-gateway 2>&1 || true
+            fi
+
+            # Start soul-gateway
+            echo "Starting soul-gateway..."
+            $PLOINKY start soul-gateway 2>&1
+
+            # Health check
+            echo "Waiting for startup..."
+            for i in $(seq 1 30); do
+              sleep 2
+              if curl -sf http://localhost:8042/health > /dev/null 2>&1; then
+                echo "Soul Gateway is healthy!"
+                curl -s http://localhost:8042/health
+                echo ""
+                exit 0
+              fi
+              echo "  Attempt $i/30..."
+            done
+
+            echo "ERROR: Soul Gateway failed to start"
+            podman logs --tail 20 "$(podman ps -a --format '{{.Names}}' | grep soul-gateway | head -1)" 2>&1 || true
+            exit 1
+          DEPLOY_SCRIPT
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
