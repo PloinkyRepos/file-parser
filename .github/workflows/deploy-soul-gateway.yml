@@ -22,7 +22,7 @@ jobs:
       - name: Deploy Soul Gateway
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "PGPASSWORD='${{ secrets.PGPASSWORD }}' DEFAULT_PROXY_API_KEY='${{ secrets.DEFAULT_PROXY_API_KEY }}' bash -s" << 'DEPLOY_SCRIPT'
+            "PGPASSWORD='${{ secrets.PGPASSWORD }}' DEFAULT_PROXY_API_KEY='${{ secrets.DEFAULT_PROXY_API_KEY }}' UPSTREAM_URL='${{ secrets.UPSTREAM_URL }}' bash -s" << 'DEPLOY_SCRIPT'
             set -e
 
             WORKSPACE="$HOME/soulGateway"
@@ -72,7 +72,7 @@ jobs:
 
             # Configure env vars
             echo "Configuring env vars..."
-            $PLOINKY var UPSTREAM_URL "https://proxy.axiologic.dev"
+            $PLOINKY var UPSTREAM_URL "$UPSTREAM_URL"
             $PLOINKY var PGHOST "host.containers.internal"
             $PLOINKY var PGPORT "5432"
             $PLOINKY var PGUSER "keycloak"
