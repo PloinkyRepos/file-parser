@@ -87,9 +87,10 @@ jobs:
               $PLOINKY clean soul-gateway 2>&1 || true
             fi
 
-            # Start soul-gateway
+            # Start soul-gateway (redirect to log so watchdog doesn't keep SSH open)
+            mkdir -p "$WORKSPACE/logs"
             echo "Starting soul-gateway..."
-            $PLOINKY start soul-gateway 2>&1
+            $PLOINKY start soul-gateway > "$WORKSPACE/logs/deploy.log" 2>&1
 
             # Health check
             echo "Waiting for startup..."
@@ -105,6 +106,9 @@ jobs:
             done
 
             echo "ERROR: Soul Gateway failed to start"
+            echo "=== Deploy log ==="
+            tail -30 "$WORKSPACE/logs/deploy.log" 2>/dev/null || true
+            echo "=== Container log ==="
             podman logs --tail 30 "$(podman ps -a --format '{{.Names}}' | grep soul-gateway | head -1)" 2>&1 || true
             exit 1
           DEPLOY_SCRIPT
