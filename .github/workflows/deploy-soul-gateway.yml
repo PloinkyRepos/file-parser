@@ -22,7 +22,7 @@ jobs:
       - name: Deploy Soul Gateway
         run: |
           ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "PGPASSWORD='${{ secrets.PGPASSWORD }}' DEFAULT_PROXY_API_KEY='${{ secrets.DEFAULT_PROXY_API_KEY }}' UPSTREAM_URL='${{ secrets.UPSTREAM_URL }}' bash -s" << 'DEPLOY_SCRIPT'
+            "PGPASSWORD='${{ secrets.PGPASSWORD }}' DEFAULT_PROXY_API_KEY='${{ secrets.DEFAULT_PROXY_API_KEY }}' UPSTREAM_URL='${{ secrets.UPSTREAM_URL }}' DASHBOARD_PASSWORD='${{ secrets.DASHBOARD_PASSWORD }}' bash -s" << 'DEPLOY_SCRIPT'
             set -e
 
             WORKSPACE="$HOME/soulGateway"
@@ -79,6 +79,7 @@ jobs:
             $PLOINKY var PGPASSWORD "$PGPASSWORD"
             $PLOINKY var PGDATABASE "postgres"
             $PLOINKY var DEFAULT_PROXY_API_KEY "$DEFAULT_PROXY_API_KEY"
+            $PLOINKY var DASHBOARD_PASSWORD "$DASHBOARD_PASSWORD"
 
             # Stop and clean existing
             if podman ps -a --format '{{.Names}}' 2>/dev/null | grep -q "soul-gateway.*soulGateway"; then
