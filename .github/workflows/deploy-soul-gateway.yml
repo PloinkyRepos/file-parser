@@ -19,11 +19,30 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
 
+      - name: Write secrets env file
+        run: |
+          cat > /tmp/soul_env << 'ENVEOF'
+          PGPASSWORD=${{ secrets.PGPASSWORD }}
+          DEFAULT_PROXY_API_KEY=${{ secrets.DEFAULT_PROXY_API_KEY }}
+          UPSTREAM_URL=${{ secrets.UPSTREAM_URL }}
+          DASHBOARD_PASSWORD=${{ secrets.DASHBOARD_PASSWORD }}
+          ENVEOF
+
       - name: Deploy Soul Gateway
         run: |
-          ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "PGPASSWORD='${{ secrets.PGPASSWORD }}' DEFAULT_PROXY_API_KEY='${{ secrets.DEFAULT_PROXY_API_KEY }}' UPSTREAM_URL='${{ secrets.UPSTREAM_URL }}' DASHBOARD_PASSWORD='${{ secrets.DASHBOARD_PASSWORD }}' bash -s" << 'DEPLOY_SCRIPT'
+          # Copy env file to remote
+          scp -i ~/.ssh/deploy_key /tmp/soul_env ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/soul_env
+
+          ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} bash -s << 'DEPLOY_SCRIPT'
             set -e
+
+            # Source secrets
+            while IFS='=' read -r key value; do
+              key=$(echo "$key" | xargs)
+              value=$(echo "$value" | xargs)
+              [ -n "$key" ] && export "$key=$value"
+            done < /tmp/soul_env
+            rm -f /tmp/soul_env
 
             WORKSPACE="$HOME/soulGateway"
             PLOINKY="$(which ploinky 2>/dev/null || echo "$HOME/ploinky/bin/ploinky")"
@@ -52,7 +71,6 @@ jobs:
             fi
 
             # Embed soul-gateway-app inside soul-gateway/app/
-            # so the container finds it at /code/app/
             echo "Embedding soul-gateway-app..."
             rm -rf "$CODE_DIR/proxies/soul-gateway/app"
             cp -a "$CODE_DIR/proxies/soul-gateway-app" "$CODE_DIR/proxies/soul-gateway/app"
@@ -116,4 +134,4 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -f ~/.ssh/deploy_key
+        run: rm -f ~/.ssh/deploy_key /tmp/soul_env
