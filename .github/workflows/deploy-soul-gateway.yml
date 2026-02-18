@@ -5,7 +5,6 @@ on:
     branches: [main]
     paths:
       - 'proxies/soul-gateway/**'
-      - 'proxies/soul-gateway-app/**'
   workflow_dispatch:
 
 jobs:
@@ -69,11 +68,6 @@ jobs:
               echo "Cloning basic repo..."
               git clone "$BASIC_REPO" "$CODE_DIR/basic"
             fi
-
-            # Embed soul-gateway-app inside soul-gateway/app/
-            echo "Embedding soul-gateway-app..."
-            rm -rf "$CODE_DIR/proxies/soul-gateway/app"
-            cp -a "$CODE_DIR/proxies/soul-gateway-app" "$CODE_DIR/proxies/soul-gateway/app"
 
             # Create workspace
             mkdir -p "$WORKSPACE"
