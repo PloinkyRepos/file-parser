@@ -30,6 +30,7 @@ const SUPPORTED_TYPES = new Map([
 ]);
 
 const DEFAULT_PREVIEW_LIMIT = 6000;
+const DEFAULT_MAX_REQUEST_ITEMS = 500;
 
 function truncate(value, limit = DEFAULT_PREVIEW_LIMIT) {
     if (!value) {
@@ -40,6 +41,294 @@ function truncate(value, limit = DEFAULT_PREVIEW_LIMIT) {
         return text;
     }
     return `${text.slice(0, limit)}…`;
+}
+
+function normaliseLine(value) {
+    return String(value || "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function normalisedKey(value) {
+    return normaliseLine(value)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim();
+}
+
+function extractDocxHeaderValue(lines, variants) {
+    const candidateKeys = new Set(variants.map((variant) => normalisedKey(variant)));
+
+    for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i];
+        const normalized = normalisedKey(line);
+        if (!normalized) {
+            continue;
+        }
+
+        for (const key of candidateKeys) {
+            if (!normalized.startsWith(key)) {
+                continue;
+            }
+
+            const raw = String(line || "");
+            const inlineMatch = raw.match(/^[^:]+:\s*(.+)$/);
+            if (inlineMatch && inlineMatch[1]) {
+                return normaliseLine(inlineMatch[1]);
+            }
+
+            if (normalized === key && i + 1 < lines.length) {
+                const next = normaliseLine(lines[i + 1]);
+                if (next && !candidateKeys.has(normalisedKey(next))) {
+                    return next;
+                }
+            }
+        }
+    }
+
+    return "";
+}
+
+function parseNumberToken(value) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return value;
+    }
+    const text = normaliseLine(value);
+    if (!text) {
+        return null;
+    }
+    const match = text.match(/-?\d+(?:\.\d+)?/);
+    if (!match) {
+        return null;
+    }
+    const parsed = Number(match[0]);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function extractDocxRequestHeader(lines) {
+    const orderNumber = extractDocxHeaderValue(lines, [
+        "Order Number",
+        "Job Number",
+        "Job ID",
+        "Order ID",
+    ]);
+    const requestedBy = extractDocxHeaderValue(lines, [
+        "Order Requested by",
+        "Requested By",
+        "Ordered By",
+        "Client",
+    ]);
+    const project = extractDocxHeaderValue(lines, ["Project", "Job Name"]);
+    const site = extractDocxHeaderValue(lines, ["Site", "Location"]);
+    const dateOrdered = extractDocxHeaderValue(lines, [
+        "Date Ordered",
+        "Created",
+        "Date",
+    ]);
+    const dateRequired = extractDocxHeaderValue(lines, [
+        "Date Required",
+        "Required Date",
+        "Need By",
+    ]);
+
+    const payload = {
+        "Order Number": orderNumber,
+        "Order Requested by": requestedBy,
+        Project: project,
+        Site: site,
+        "Date Ordered": dateOrdered,
+        "Date Required": dateRequired,
+    };
+
+    const hasAnyValue = Object.values(payload).some((value) => normaliseLine(value));
+    return hasAnyValue ? payload : null;
+}
+
+function buildDocxNoiseSet() {
+    return new Set([
+        "metadata",
+        "content",
+        "stores use only",
+        "stores use",
+        "no",
+        "material plant description",
+        "material",
+        "plant description",
+        "quantity",
+        "required",
+        "quantity required",
+        "quantity issued",
+        "issued",
+        "quantity short",
+        "short",
+        "quantity returned",
+        "returned",
+        "ccl no",
+        "order number",
+        "order requested by",
+        "date ordered",
+        "project",
+        "date required",
+        "site",
+    ]);
+}
+
+function isDocxNoiseLine(line, noiseSet) {
+    const text = normaliseLine(line);
+    if (!text) {
+        return true;
+    }
+    if (/^[-–—:]+$/.test(text)) {
+        return true;
+    }
+    const normalized = normalisedKey(text);
+    if (!normalized) {
+        return true;
+    }
+    if (noiseSet.has(normalized)) {
+        return true;
+    }
+    if (normalized.startsWith("quantity ") || normalized.startsWith("order ")) {
+        return true;
+    }
+    return false;
+}
+
+function extractDocxRequestItems(lines) {
+    const noiseSet = buildDocxNoiseSet();
+    const endSectionMarkers = [
+        "signed by",
+        "issue by",
+        "issued by",
+        "received by",
+        "returned by",
+        "storeman",
+    ];
+
+    const storesMarkerIndex = lines.findIndex(
+        (line) => normalisedKey(line).includes("stores use"),
+    );
+    const quantityHeaderIndex = lines.findIndex(
+        (line) => normalisedKey(line) === "quantity required",
+    );
+
+    const startIndex =
+        storesMarkerIndex >= 0
+            ? storesMarkerIndex + 1
+            : quantityHeaderIndex >= 0
+                ? quantityHeaderIndex + 1
+                : 0;
+
+    const endIndexExclusive = (() => {
+        const index = lines.findIndex((line, i) => {
+            if (i <= startIndex) {
+                return false;
+            }
+            const normalized = normalisedKey(line);
+            return endSectionMarkers.some((marker) => normalized.includes(marker));
+        });
+        return index >= 0 ? index : lines.length;
+    })();
+
+    const scopedLines = lines.slice(startIndex, endIndexExclusive);
+    const rows = [];
+    let cursor = 0;
+
+    while (cursor < scopedLines.length && rows.length < DEFAULT_MAX_REQUEST_ITEMS) {
+        const candidate = scopedLines[cursor];
+        const lineNo = parseNumberToken(candidate);
+        const lineNoInt = Number.isFinite(lineNo) ? Math.trunc(lineNo) : null;
+        if (
+            !lineNoInt ||
+            lineNoInt <= 0 ||
+            lineNoInt > DEFAULT_MAX_REQUEST_ITEMS ||
+            !/^\d+$/.test(normaliseLine(candidate))
+        ) {
+            cursor += 1;
+            continue;
+        }
+
+        let descriptionIndex = cursor + 1;
+        while (
+            descriptionIndex < scopedLines.length &&
+            isDocxNoiseLine(scopedLines[descriptionIndex], noiseSet)
+        ) {
+            descriptionIndex += 1;
+        }
+        if (descriptionIndex >= scopedLines.length) {
+            break;
+        }
+
+        const description = normaliseLine(scopedLines[descriptionIndex]);
+        if (
+            !description ||
+            /^\d+$/.test(description) ||
+            isDocxNoiseLine(description, noiseSet)
+        ) {
+            cursor += 1;
+            continue;
+        }
+
+        let quantityIndex = descriptionIndex + 1;
+        while (
+            quantityIndex < scopedLines.length &&
+            isDocxNoiseLine(scopedLines[quantityIndex], noiseSet)
+        ) {
+            quantityIndex += 1;
+        }
+        if (quantityIndex >= scopedLines.length) {
+            break;
+        }
+
+        const quantityRaw = normaliseLine(scopedLines[quantityIndex]);
+        const quantityNumber = parseNumberToken(quantityRaw);
+        if (!Number.isFinite(quantityNumber)) {
+            cursor = descriptionIndex + 1;
+            continue;
+        }
+
+        rows.push({
+            "No.": lineNoInt,
+            "Material/Plant Description": description,
+            "Quantity Required": quantityRaw,
+        });
+
+        cursor = quantityIndex + 1;
+    }
+
+    return rows;
+}
+
+export function parseDocxTextToTables(text) {
+    const lines = String(text || "")
+        .split(/\r?\n/)
+        .map((line) => normaliseLine(line))
+        .filter(Boolean);
+
+    if (!lines.length) {
+        return [];
+    }
+
+    const tables = [];
+    const headerRow = extractDocxRequestHeader(lines);
+    if (headerRow) {
+        tables.push({
+            name: "Request Header",
+            totalRows: 1,
+            sampleRows: [headerRow],
+        });
+    }
+
+    const requestItems = extractDocxRequestItems(lines);
+    if (requestItems.length) {
+        tables.push({
+            name: "Request Items",
+            totalRows: requestItems.length,
+            sampleRows: requestItems,
+        });
+    }
+
+    return tables;
 }
 
 function normaliseType(inputType, filePath) {
@@ -74,7 +363,9 @@ async function loadTxt(filePath) {
 
 async function loadDocx(filePath) {
     const { value } = await mammothLib.extractRawText({ path: filePath });
-    return { type: "docx", text: value || "" };
+    const text = value || "";
+    const tables = parseDocxTextToTables(text);
+    return { type: "docx", text, tables };
 }
 
 async function loadDoc(filePath) {

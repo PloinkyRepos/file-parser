@@ -3,12 +3,74 @@ import assert from 'node:assert';
 import path from 'node:path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
-import { loadDocuments } from '../../src/lib/document-loader.mjs';
+import { loadDocuments, parseDocxTextToTables } from '../../src/lib/document-loader.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixturesPath = path.join(__dirname, '../fixtures');
 
 describe('document-loader', () => {
+    describe('parseDocxTextToTables', () => {
+        it('should extract request header and item rows from workflow text', () => {
+            const rawText = [
+                'Order Number',
+                '001-1699',
+                'Order Requested by',
+                'Ahmed Shaik',
+                'Project',
+                'PA install',
+                'Date Required',
+                '16/04/25',
+                'Site',
+                'Angel',
+                'Stores use Only',
+                'No.',
+                'Material/Plant Description',
+                'Quantity Required',
+                '1',
+                '25mm conduits',
+                '8',
+                '2',
+                '25mm conduit besa boxes and fixings',
+                '5',
+                '3',
+                '25mm couplers and nipples',
+                '10',
+                'Signed by',
+                'Storeman',
+            ].join('\n');
+
+            const tables = parseDocxTextToTables(rawText);
+            assert.ok(Array.isArray(tables));
+            assert.strictEqual(tables.length, 2);
+
+            const headerTable = tables.find((table) => table.name === 'Request Header');
+            assert.ok(headerTable);
+            assert.strictEqual(headerTable.totalRows, 1);
+            assert.strictEqual(headerTable.sampleRows[0]['Order Number'], '001-1699');
+            assert.strictEqual(headerTable.sampleRows[0]['Order Requested by'], 'Ahmed Shaik');
+            assert.strictEqual(headerTable.sampleRows[0].Project, 'PA install');
+
+            const itemsTable = tables.find((table) => table.name === 'Request Items');
+            assert.ok(itemsTable);
+            assert.strictEqual(itemsTable.totalRows, 3);
+            assert.deepStrictEqual(itemsTable.sampleRows[0], {
+                'No.': 1,
+                'Material/Plant Description': '25mm conduits',
+                'Quantity Required': '8',
+            });
+            assert.deepStrictEqual(itemsTable.sampleRows[2], {
+                'No.': 3,
+                'Material/Plant Description': '25mm couplers and nipples',
+                'Quantity Required': '10',
+            });
+        });
+
+        it('should return no tables for unrelated text', () => {
+            const tables = parseDocxTextToTables('Random note\nNo structured request here.');
+            assert.deepStrictEqual(tables, []);
+        });
+    });
+
     describe('loadDocuments', () => {
         it('should load a text file', async () => {
             const entries = [path.join(fixturesPath, 'sample.txt')];
