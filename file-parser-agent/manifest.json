@@ -1,4 +1,5 @@
 {
+    "lite-sandbox": true,
     "container": "docker.io/library/node:22.20-alpine",
     "update": "npm update --omit=dev",
     "about": "File Parser MCP agent. Extracts content from PDFs, Office docs, and spreadsheets and converts to Markdown.",
