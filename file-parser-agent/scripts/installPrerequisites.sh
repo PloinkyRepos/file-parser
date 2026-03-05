@@ -22,8 +22,19 @@ if [ -z "${trimmed_packages}" ]; then
 fi
 
 if ! command -v apk >/dev/null 2>&1; then
-    printf '%s\n' "apk is not available. This script must run inside the node:22.20-alpine image." >&2
-    exit 1
+    if command -v dnf >/dev/null 2>&1; then
+        PKG_MGR="dnf"
+    elif command -v yum >/dev/null 2>&1; then
+        PKG_MGR="yum"
+    elif command -v apt-get >/dev/null 2>&1; then
+        PKG_MGR="apt-get"
+    else
+        printf '%s\n' "Warning: No supported package manager found. Missing packages: ${trimmed_packages}" >&2
+        printf '%s\n' "Install them manually on the host if needed." >&2
+        exit 0
+    fi
+else
+    PKG_MGR="apk"
 fi
 
 SUDO_CMD=""
@@ -44,8 +55,19 @@ run_pkg() {
     fi
 }
 
-printf '%s\n' "Installing packages via apk: ${trimmed_packages}"
-run_pkg apk update
-run_pkg apk add --no-cache ${trimmed_packages}
+printf '%s\n' "Installing packages via ${PKG_MGR}: ${trimmed_packages}"
+case "${PKG_MGR}" in
+    apk)
+        run_pkg apk update
+        run_pkg apk add --no-cache ${trimmed_packages}
+        ;;
+    dnf|yum)
+        run_pkg ${PKG_MGR} install -y ${trimmed_packages}
+        ;;
+    apt-get)
+        run_pkg apt-get update
+        run_pkg apt-get install -y ${trimmed_packages}
+        ;;
+esac
 
 printf '%s\n' "Installed prerequisites: ${trimmed_packages}"
