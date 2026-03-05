@@ -39,11 +39,12 @@ fi
 
 SUDO_CMD=""
 if [ "$(id -u)" -ne 0 ]; then
-    if command -v sudo >/dev/null 2>&1; then
+    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
         SUDO_CMD="sudo"
     else
-        printf '%s\n' "Root privileges are required. Re-run as root or install sudo." >&2
-        exit 1
+        printf '%s\n' "Warning: Cannot install packages (no root/sudo). Missing: ${trimmed_packages}" >&2
+        printf '%s\n' "Install them on the host if needed. Continuing without them." >&2
+        exit 0
     fi
 fi
 
