@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ploinky status:*)",
+      "Bash(ploinky logs:*)",
+      "Bash(podman logs:*)",
+      "Bash(podman exec:*)",
+      "Bash(podman inspect:*)",
+      "Bash(python3:*)",
+      "Bash(ploinky restart:*)",
+      "Bash(podman stop:*)",
+      "Bash(podman start:*)",
+      "Bash(git log:*)",
+      "Bash(scp:*)",
+      "Bash(ssh -i ~/lydiarx_privatekey.pem admin@193.180.209.191 \"cd ~/testSkillExplorer && source ~/.bashrc && ploinky restart router\")",
+      "Bash(/home/apparatus/work/file-parser/ploinky/cli/server/utils/logger.js )",
+      "Bash(/home/apparatus/work/file-parser/ploinky/cli/server/utils/processLifecycle.js )",
+      "Bash(/home/apparatus/work/file-parser/ploinky/cli/services/serverManager.js )",
+      "Bash(/home/apparatus/work/file-parser/ploinky/cli/server/Watchdog.js )",
+      "Bash(admin@193.180.209.191:~/ploinky_update/)",
+      "Bash(ssh:*)",
+      "Bash(admin@193.180.209.191:~/ploinky/cli/server/utils/logger.js)",
+      "Bash(admin@193.180.209.191:~/ploinky/cli/server/utils/processLifecycle.js)",
+      "Bash(admin@193.180.209.191:~/ploinky/cli/services/serverManager.js)",
+      "Bash(admin@193.180.209.191:~/ploinky/cli/server/Watchdog.js)",
+      "Bash(chmod:*)",
+      "Bash(curl:*)",
+      "Bash(podman ps:*)"
+    ]
+  },
+  "outputStyle": "default"
+}
