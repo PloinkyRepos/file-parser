@@ -8,6 +8,12 @@ This document describes the current runtime architecture in the workspace after 
 
 It documents the code as it exists now, including current migration shims and remaining coupling points.
 
+Important:
+
+- this document describes the current committed implementation
+- it does not define the final target architecture after the later clarification that `gitAgent` may be explicitly coupled to `dpuAgent`
+- the revised target architecture is documented in [dpu-authority-simplified-architecture-plan.md](/Users/danielsava/work/file-parser/dpu-authority-simplified-architecture-plan.md)
+
 ## 1. Runtime Architecture
 
 ### 1.1 Main components

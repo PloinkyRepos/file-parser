@@ -1,5 +1,15 @@
 # Ploinky Capability, Secure Wire, and Pluggable SSO Refactor
 
+Superseded-scope note:
+
+- this document reflects the stronger provider-neutral consumer architecture that was used during the implementation pass
+- after implementation, the requirement was clarified: `gitAgent` may be explicitly coupled to `dpuAgent`; only `Ploinky core` must remain uncoupled from concrete agents/providers
+- for future simplification of the `gitAgent <-> dpuAgent` path, use [dpu-authority-simplified-architecture-plan.md](/Users/danielsava/work/file-parser/dpu-authority-simplified-architecture-plan.md) as the authoritative target
+- this document still remains relevant for:
+  - the current committed implementation
+  - provider-neutral SSO in core
+  - generic secure-wire primitives that may still be reused
+
 ## Summary
 
 Refactor Ploinky so that:
