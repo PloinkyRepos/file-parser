@@ -31,6 +31,8 @@ These are the current target invariants for ongoing work.
 4. The `gitAgent -> dpuAgent` wire must be secure against impersonation, forged delegated user context, replay, and request tampering.
 5. SSO must remain provider-agent-based. `basic/keycloak` is the first provider, but Ploinky core must stay provider-neutral.
 6. When SSO is disabled, local auth and the existing dev-only web-token auth behavior must continue to work.
+7. Agent principals are derived by Ploinky only, as `agent:<repo>/<agent>`. Manifests must not declare an `identity` block, and short-form aliases like `agent:gitAgent` are no longer recognized.
+8. The maximum secret roles an agent may receive live in DPU-owned policy (`permissions.manifest.json -> agentPolicies`), not in agent manifests. DPU rejects secret grants to agent principals that have no DPU policy entry.
 
 ## 2. Original Request and Prompt Context
 
@@ -155,6 +157,8 @@ Ploinky core no longer owns:
 - Keycloak-specific claims parsing
 - OIDC provider-specific protocol details
 
+`basic/keycloak/manifest.json` also no longer declares an `identity` block. Its principal is derived by Ploinky as `agent:basic/keycloak`.
+
 ## 5.3 `gitAgent`
 
 `gitAgent` is now intentionally DPU-aware again.
@@ -166,11 +170,7 @@ It:
 - calls DPU directly through the routed MCP path with a single signed JSON-RPC `tools/call`
 - no longer depends on capability binding metadata for secret storage
 
-It still has one legacy DPU-specific manifest hook:
-
-- `capabilities.dpu.allowedRoles`
-
-That is still used as DPU grant policy metadata.
+`gitAgent/manifest.json` no longer declares `identity`, `capabilities`, or any other DPU-specific policy hook. The agent principal is derived by Ploinky as `agent:AssistOSExplorer/gitAgent`, and the maximum secret roles the agent may receive live entirely in DPU-owned `agentPolicies`.
 
 ## 5.4 `dpuAgent`
 
@@ -190,7 +190,10 @@ It enforces:
 
 - caller/tool/scope policy
 - secret ACLs and grants
+- DPU-owned `agentPolicies[<principalId>].secrets.allowedRoles` as the ceiling for any agent-principal secret grant; grants to agent principals without a policy entry are rejected
 - final authorization
+
+DPU no longer loads agent manifests during grant validation and no longer accepts short-form agent aliases such as `agent:gitAgent`. Admins manage `agentPolicies` through the `dpu_agent_policy_get` / `dpu_agent_policy_set` tools.
 
 The router no longer re-authorizes the Git/DPU call via capability bindings.
 
@@ -297,7 +300,7 @@ Current flow after the simplification:
 3. Router authenticates the browser session and passes the request through.
 4. `gitAgent` signs a direct JSON-RPC `tools/call` request for DPU.
 5. `gitAgent` forwards the router-signed user token in `x-ploinky-user-context`.
-6. DPU verifies both artifacts and confirms the user token audience matches `agent:gitAgent`.
+6. DPU verifies both artifacts and confirms the user token audience matches `agent:AssistOSExplorer/gitAgent`.
 7. DPU stores the GitHub token under its secret policy.
 
 ## 7.4 GitHub token retrieval flow
@@ -362,15 +365,19 @@ Important files:
   - no MCP SDK session is used for the DPU hop
   - no longer reads capability-binding env
 - [AssistOSExplorer/gitAgent/manifest.json](/Users/danielsava/work/file-parser/AssistOSExplorer/gitAgent/manifest.json)
-  - `requires.secretStore` removed
-  - legacy `capabilities.dpu.allowedRoles` remains
+  - `requires.secretStore`, `identity`, and `capabilities` all removed
+  - no DPU-specific policy remains in the manifest
 - [AssistOSExplorer/dpuAgent/server/standalone-mcp-server.mjs](/Users/danielsava/work/file-parser/AssistOSExplorer/dpuAgent/server/standalone-mcp-server.mjs)
   - verifies direct caller assertion + user token path
 - [AssistOSExplorer/dpuAgent/lib/dpu-store.mjs](/Users/danielsava/work/file-parser/AssistOSExplorer/dpuAgent/lib/dpu-store.mjs)
   - no longer depends on provider-binding env for Git/DPU secret authorization
   - delegated owner + agent-read resolves to effective write by design; agent grants do not downgrade owner rights
-- [AssistOSExplorer/shared/invocation-auth.mjs](/Users/danielsava/work/file-parser/AssistOSExplorer/shared/invocation-auth.mjs)
-  - shared helper for reconstructing `authInfo` from verified invocation metadata
+- [invocation-auth.mjs](/Users/danielsava/work/file-parser/ploinky/Agent/lib/invocation-auth.mjs)
+  - shared runtime helper for reconstructing `authInfo` from verified invocation metadata
+- [AssistOSExplorer/dpuAgent/tools/dpu_tool.mjs](/Users/danielsava/work/file-parser/AssistOSExplorer/dpuAgent/tools/dpu_tool.mjs)
+  - reads only verified `metadata.invocation`; no legacy `metadata.authInfo` fallback remains
+- [AssistOSExplorer/gitAgent/tools/git_tool.mjs](/Users/danielsava/work/file-parser/AssistOSExplorer/gitAgent/tools/git_tool.mjs)
+  - reads only verified `metadata.invocation`; no legacy `metadata.authInfo` fallback remains
 
 UI and browser-test support work:
 
@@ -382,6 +389,7 @@ UI and browser-test support work:
 Main outcome:
 
 - `basic/keycloak` is now the first `auth-provider/v1` implementation
+- its manifest no longer declares a self-chosen principal; Ploinky derives `agent:basic/keycloak`
 
 Important area:
 
@@ -421,9 +429,10 @@ Purpose:
 
 State achieved:
 
-- CoralFlow deployed and reachable
+- CoralFlow deployed and reachable after a clean restart
 - SSO works through `basic/keycloak`
-- app tested from browser
+- router listening again on `127.0.0.1:8080`
+- Keycloak OIDC discovery confirmed after restart
 
 Useful endpoints/credentials used during setup:
 
@@ -451,6 +460,8 @@ Important current state:
 - `gitAgent` no longer needs `PLOINKY_CAPABILITY_BINDINGS_JSON`
 - `dpuAgent` no longer needs `PLOINKY_PROVIDER_BINDINGS_JSON`
 - both use `PLOINKY_AGENT_PUBLIC_KEYS_JSON`
+- the DPU state was clean-reseeded with canonical `agentPolicies`
+- workspace-only copies of `soplangAgent`, `webCli`, and `webAdmin` manifests were disabled so the router could start without unrelated broken agents
 - the workspace was redeployed after the router-admission and immediate-caller-audience hardening changes
 
 Credentials:
@@ -463,7 +474,11 @@ Live verification already performed:
 - router health on `127.0.0.1:8088`
 - authenticated `git_auth_status` through `router -> gitAgent -> dpuAgent`
 - Git modal now shows repos and identity autofill logic behaves correctly after the fixes
-- after the later hardening pass, the workspace was redeployed again and container/runtime readiness was confirmed; the new audience rule is unit-verified, but a fresh curl-based local-auth MCP smoke was inconclusive after restart
+- after the principal/policy cutover, a clean local-auth MCP session was established on `/mcps/gitAgent/mcp?agent=explorer`
+- `git_auth_status` succeeded before token storage
+- `git_auth_store_token` succeeded against the clean canonical DPU state
+- a follow-up `git_auth_status` confirmed `connected: true` and `tokenStored: true`
+- the temporary test token was then removed with `git_auth_disconnect`
 
 ## 10. Tests And Verification
 
@@ -485,14 +500,15 @@ Additional live verification:
 - `testCoral` SSO browser flow works
 - `testExplorer` Git/DPU flow works after redeploy
 - authenticated `git_auth_status` succeeds through the routed path
+- authenticated `git_auth_store_token` succeeds through the direct routed gitAgent MCP endpoint after a clean DPU reseed
 - later hardening passes were unit-verified and redeployed to `testExplorer`
 
 ## 11. Known Gaps / Remaining Work
 
 These are the most relevant remaining items.
 
-1. There are still legacy mentions of the earlier capability-heavy model in some docs and some non-Git/DPU code paths.
-2. `capabilities.dpu.allowedRoles` is still a DPU-specific coupling point in `gitAgent/manifest.json`.
+1. There are still legacy mentions of the earlier capability-heavy model in some docs and some non-Git/DPU code paths. Core current-state docs (DPU DS03/DS05/DS06, gitAgent DS05/DS06, Ploinky DS-capability-and-secure-wire) have been updated to the principal-derivation / DPU-owned-policy model; historical architecture-plan docs have not been rewritten.
+2. `gitAgent/manifest.json` no longer carries `identity` or `capabilities`. Secret-role ceilings are now DPU-owned and managed via `dpu_agent_policy_get` / `dpu_agent_policy_set`. Existing `testExplorer`/`testCoral` workspaces need a clean reseed to pick up the canonical principal form; old persisted short-form principals will not resolve.
 3. The secure-wire and capability-registry code still contain more machinery than the simplified Git/DPU architecture strictly needs.
 4. Replay protection is currently in-process only:
    - router delegated replay cache is process-local
@@ -500,6 +516,7 @@ These are the most relevant remaining items.
    Clustering either component would require shared replay state.
 5. Full browser-driven end-to-end negative-path tests for replay/forgery are still thinner than the unit coverage.
 6. The DPU audit default is intentionally `disabled` on fresh state. This is documented in DPU specs and tests; do not treat it as an accidental regression unless product requirements change.
+7. The aggregated router MCP endpoint (`/mcp`) still reaches hardened agents without a first-party invocation grant in at least one path. The validated live Git/DPU probe therefore used the direct routed endpoint (`/mcps/gitAgent/mcp?agent=explorer`) rather than the aggregated `/mcp` endpoint.
 7. There is an unrelated local diff in `ploinky/globalDeps/package.json` (`achillesAgentLib` branch pin). Treat it as separate from the wire/SSO work unless explicitly requested.
 8. The handoff branch is pushed, but the root `file-parser` repo still contains unrelated uncommitted local files outside this work. Do not blindly commit everything.
 

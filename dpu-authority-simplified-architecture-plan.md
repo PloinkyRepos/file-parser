@@ -169,7 +169,7 @@ Purpose:
 Claims:
 
 - `iss = ploinky-router`
-- `aud = agent:gitAgent`
+- `aud = agent:AssistOSExplorer/gitAgent`
 - `sid`
 - `sub` for the normalized user principal
 - normalized user claims:
@@ -199,8 +199,8 @@ Purpose:
 
 Claims:
 
-- `iss = agent:gitAgent`
-- `aud = agent:dpuAgent`
+- `iss = agent:AssistOSExplorer/gitAgent`
+- `aud = agent:AssistOSExplorer/dpuAgent`
 - `tool`
 - optional `scope`
 - `body_hash`
@@ -234,7 +234,7 @@ The router does not need to resolve capability bindings or mint a provider-facin
 `dpuAgent` verifies, in order:
 
 1. the agent assertion signature using `gitAgent`’s public key
-2. `aud == agent:dpuAgent`
+2. `aud == agent:AssistOSExplorer/dpuAgent`
 3. `iat/exp` within allowed skew
 4. `jti` not seen before
 5. `body_hash` matches the actual request body

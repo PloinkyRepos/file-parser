@@ -188,7 +188,7 @@ Properties:
 Suggested claims:
 
 - `iss = ploinky-router`
-- `aud = agent:gitAgent`
+- `aud = agent:AssistOSExplorer/gitAgent`
 - `sub`
 - `sid`
 - `user`
@@ -215,8 +215,8 @@ Properties:
 
 Suggested claims:
 
-- `iss = agent:gitAgent`
-- `aud = agent:dpuAgent`
+- `iss = agent:AssistOSExplorer/gitAgent`
+- `aud = agent:AssistOSExplorer/dpuAgent`
 - `tool`
 - optional `scope`
 - `body_hash`
@@ -243,7 +243,7 @@ If the call goes through the router:
 `dpuAgent` verifies:
 
 1. caller assertion signature using `gitAgent` public key
-2. assertion audience equals `agent:dpuAgent`
+2. assertion audience equals `agent:AssistOSExplorer/dpuAgent`
 3. assertion TTL and nonce
 4. assertion `body_hash`
 5. `user_context_token` signature using router public key
@@ -560,7 +560,7 @@ This section condenses the expected edits.
 
 - `AssistOSExplorer/gitAgent/manifest.json`
   - remove `requires.secretStore`
-  - evaluate removal of `capabilities.dpu.allowedRoles`
+  - remove `capabilities.dpu.allowedRoles`
 - `AssistOSExplorer/gitAgent/lib/secret-store-client.mjs`
   - simplify into explicit DPU client
   - remove binding/alias/provider-resolution logic

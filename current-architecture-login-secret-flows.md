@@ -35,13 +35,11 @@ The current architecture still contains a capability registry in Ploinky core, b
 - `dpuAgent` owns the final authorization decision
 - the capability registry remains relevant for generic SSO/provider-neutral work, not for the Git/DPU storage path
 
-Historical examples still present in manifests/docs:
+Manifest state after the principal-derivation / DPU-policy pass:
 
-- `AssistOSExplorer/gitAgent/manifest.json`
-  - `capabilities.dpu.allowedRoles`
-- `AssistOSExplorer/dpuAgent/manifest.json`
-  - `provides["secret-store/v1"]`
-  - operations: `secret_get`, `secret_put`, `secret_delete`, `secret_grant`, `secret_revoke`, `secret_list`
+- `AssistOSExplorer/gitAgent/manifest.json` — no `identity`, no `capabilities`, no `requires.secretStore`. Ploinky derives the principal as `agent:AssistOSExplorer/gitAgent`.
+- `AssistOSExplorer/dpuAgent/manifest.json` — no `identity`, no legacy `capabilities`, no `provides["secret-store/v1"]`. Only `runtime.resources` + `profiles` remain.
+- DPU-owned policy for each agent's secret-role ceiling lives in `permissions.manifest.json -> agentPolicies[<principalId>].secrets.allowedRoles`, managed via `dpu_agent_policy_get` / `dpu_agent_policy_set` admin tools.
 
 ### 1.3 Launcher-injected runtime data
 
@@ -263,16 +261,22 @@ That client:
 
 ### 4.2 Provider implementation
 
-`dpuAgent` implements `secret-store/v1`.
+`dpuAgent` is the explicit secret authority for the Git/DPU path. It no
+longer advertises a provider-neutral `secret-store/v1` contract in its
+manifest, and the active Git/DPU runtime path no longer uses provider
+bindings.
 
 Provider-side path:
 
-1. `AgentServer` verifies the router invocation token
-2. `AssistOSExplorer/dpuAgent/tools/dpu_tool.mjs` extracts invocation metadata
+1. `AgentServer` verifies either the router first-party invocation token
+   or the direct delegated `x-ploinky-caller-assertion` +
+   `x-ploinky-user-context` pair
+2. `AssistOSExplorer/dpuAgent/tools/dpu_tool.mjs` extracts the verified
+   `metadata.invocation`
 3. `dpu_tool.mjs` builds `authInfo`
 4. `AssistOSExplorer/dpuAgent/lib/dpu-store.mjs` enforces:
    - invocation scope
-   - provider binding allowlist
+   - DPU-owned `agentPolicies`
    - secret ACL rules
 
 ### 4.3 DPU persistence model
@@ -352,7 +356,7 @@ sequenceDiagram
     DPU->>DPU: verify direct delegated headers + ACL + scope
     DPU-->>Router: secret stored
     Router-->>Git: success
-    Git->>Router: secret_grant(agent:gitAgent, read) best-effort
+    Git->>Router: secret_grant(agent:AssistOSExplorer/gitAgent, read) best-effort
     Router->>DPU: relay signed grant call
     DPU-->>Router: grant stored
     Router-->>Git: success
@@ -373,7 +377,7 @@ sequenceDiagram
    - signs a caller assertion with `gitAgent`’s private key
    - includes the forwarded `user_context_token` when present
    - sends a direct JSON-RPC `tools/call` request to the routed DPU endpoint
-8. The router verifies the caller assertion plus the forwarded user token for `agent:gitAgent`, then relays the call.
+8. The router verifies the caller assertion plus the forwarded user token for `agent:AssistOSExplorer/gitAgent`, then relays the call.
 9. `dpuAgent` verifies the delegated direct headers in `AgentServer`.
 10. `dpu_tool.mjs` reconstructs `authInfo` from the verified invocation metadata.
 11. `dpu-store.mjs` enforces:
@@ -382,7 +386,7 @@ sequenceDiagram
 12. `putSecret()` writes:
     - secret metadata to `state.json`
     - encrypted secret value to `secrets.json`
-13. `putStoredGitToken()` then performs a best-effort `secret_grant(key, agent:gitAgent, read)`.
+13. `putStoredGitToken()` then performs a best-effort `secret_grant(key, agent:AssistOSExplorer/gitAgent, read)`.
 
 ### 6.3 Ownership and ACL semantics
 
@@ -393,11 +397,7 @@ The important ACL point is:
 
 So today the secret is typically owned by the user principal, not by `gitAgent`.
 
-The extra `secret_grant(..., agent:gitAgent, read)` call records an explicit agent grant in addition to the user-owned secret. This is currently allowed because DPU still checks the grantee agent manifest for an allowlist:
-
-- `gitAgent/manifest.json -> capabilities.dpu.allowedRoles = ["read"]`
-
-That field is still a live DPU-specific coupling point.
+The extra `secret_grant(..., agent:AssistOSExplorer/gitAgent, read)` call records an explicit agent grant in addition to the user-owned secret. DPU now validates the grantee's role against DPU-owned policy in `permissions.manifest.json -> agentPolicies[agent:AssistOSExplorer/gitAgent].secrets.allowedRoles`. If no policy exists for the agent principal, the grant is rejected. Admins configure the policy through `dpu_agent_policy_set`.
 
 ## 7. Secret Retrieval Flow
 
@@ -437,7 +437,7 @@ sequenceDiagram
 2. `gitAgent` calls `getStoredGitToken({ authInfo })`.
 3. `getStoredGitToken()` calls `secret_get("GIT_GITHUB_TOKEN")` through the DPU-aware secret-store client.
 4. `gitAgent` signs a caller assertion with:
-   - issuer = `agent:gitAgent`
+   - issuer = `agent:AssistOSExplorer/gitAgent`
    - tool = `secret_get`
    - scope = `secret:read`
 5. `gitAgent` forwards the router-issued `user_context_token` it received on the first hop.
@@ -465,13 +465,9 @@ The current Git/DPU path is intentionally DPU-aware:
 - the router only verifies and relays the signed delegated request
 - DPU owns the authorization decision
 
-### 8.2 `capabilities.dpu.allowedRoles` is still live
+### 8.2 DPU-owned agent policies replace manifest allowedRoles
 
-`gitAgent.manifest.json -> capabilities.dpu.allowedRoles` is not needed to route the call, but it is still used by DPU during `secret_grant` validation.
-
-So today:
-
-- `capabilities.dpu.allowedRoles` is a remaining DPU-specific grant-policy hook
+`gitAgent.manifest.json` no longer declares `capabilities.dpu.allowedRoles` or any DPU-specific policy. DPU validates `secret_grant` to agent principals against `permissions.manifest.json -> agentPolicies[<principalId>].secrets.allowedRoles` — the agent manifest is not consulted. If an agent principal has no DPU policy entry, every grant to it is rejected. Admins manage policies through the `dpu_agent_policy_get` / `dpu_agent_policy_set` tools.
 
 ### 8.3 User-context tokens are scoped to the immediate caller agent
 
@@ -518,7 +514,4 @@ The current GitHub token handling is:
 - token writes and reads performed through the DPU-aware signed client
 - all delegated calls protected by caller assertions, immediate-caller-scoped user-context tokens, DPU scope checks, and DPU ACL validation
 
-The two notable current leftovers are:
-
-- the legacy auth compatibility shim
-- the DPU-specific `capabilities.dpu.allowedRoles` grant-policy check in `gitAgent`’s manifest
+There are no remaining manifest-level coupling points between `gitAgent` and DPU. Agent principals are derived by Ploinky (`agent:<repo>/<agent>`); DPU owns secret-role policy via `agentPolicies`.
