@@ -18,6 +18,7 @@ Related documents:
 - [dpu-authority-simplified-architecture-plan.md](/Users/danielsava/work/file-parser/dpu-authority-simplified-architecture-plan.md)
 - [dpu-authority-simplified-implementation-plan.md](/Users/danielsava/work/file-parser/dpu-authority-simplified-implementation-plan.md)
 - [principal-derivation-and-dpu-agent-policy-plan.md](/Users/danielsava/work/file-parser/principal-derivation-and-dpu-agent-policy-plan.md)
+- [runtime-keyed-dependency-preparation-plan.md](/Users/danielsava/work/file-parser/runtime-keyed-dependency-preparation-plan.md)
 - [current-architecture-login-secret-flows.md](/Users/danielsava/work/file-parser/current-architecture-login-secret-flows.md)
 - [ploinky-capability-wire-sso-refactor-plan.md](/Users/danielsava/work/file-parser/ploinky-capability-wire-sso-refactor-plan.md)
 
@@ -479,6 +480,12 @@ Live verification already performed:
 - `git_auth_store_token` succeeded against the clean canonical DPU state
 - a follow-up `git_auth_status` confirmed `connected: true` and `tokenStored: true`
 - the temporary test token was then removed with `git_auth_disconnect`
+- `node /Users/danielsava/work/file-parser/ploinky/cli/index.js deps prepare AssistOSExplorer/gitAgent` prepared the container cache path successfully
+- the real runtime key derived in `testExplorer` was `container-linux-arm64-musl-node20`
+- `deps status` then reported both:
+  - `.ploinky/deps/global/container-linux-arm64-musl-node20`
+  - `.ploinky/deps/agents/AssistOSExplorer/gitAgent/container-linux-arm64-musl-node20`
+  as valid
 
 ## 10. Tests And Verification
 
@@ -490,6 +497,9 @@ Tests run during the session included:
 - `node --test ploinky/tests/unit/capabilityRegistry.test.mjs`
 - `node --test ploinky/tests/unit/genericAuthBridge.test.mjs`
 - `node --test ploinky/tests/unit/ssoService.test.mjs`
+- `node --test ploinky/tests/unit/dependencyRuntimeKey.test.mjs`
+- `node --test ploinky/tests/unit/dependencyCache.test.mjs`
+- `node --test ploinky/tests/unit/startupReadiness.test.mjs`
 - `npm test` in [AssistOSExplorer/dpuAgent](/Users/danielsava/work/file-parser/AssistOSExplorer/dpuAgent)
 - `node --test AssistOSExplorer/dpuAgent/tests/dpu-store.test.mjs`
 - `node --test AssistOSExplorer/gitAgent/tests/unit/secretStoreClient.test.mjs`
@@ -502,6 +512,7 @@ Additional live verification:
 - authenticated `git_auth_status` succeeds through the routed path
 - authenticated `git_auth_store_token` succeeds through the direct routed gitAgent MCP endpoint after a clean DPU reseed
 - later hardening passes were unit-verified and redeployed to `testExplorer`
+- `deps prepare` and `deps status` were smoke-tested in `testExplorer` against the container runtime path
 
 ## 11. Known Gaps / Remaining Work
 
@@ -560,8 +571,9 @@ If continuing implementation, the highest-signal next steps are:
 
 1. Follow [principal-derivation-and-dpu-agent-policy-plan.md](/Users/danielsava/work/file-parser/principal-derivation-and-dpu-agent-policy-plan.md) to remove manifest `identity` and legacy `capabilities`.
 2. Move agent secret-role ceilings fully into DPU-owned `agentPolicies`.
-3. Add stronger browser-level negative tests for replay, tampering, and forged delegated headers, especially around the router’s delegated `tools/call` admission path.
-4. If clustering ever becomes a requirement, replace in-process replay caches with shared state before claiming replay protection across replicas.
-5. Keep `testExplorer` as the main live validation target for Git/DPU and `testCoral` as the main live validation target for SSO.
+3. Keep [runtime-keyed-dependency-preparation-plan.md](/Users/danielsava/work/file-parser/runtime-keyed-dependency-preparation-plan.md) aligned with the implementation. The prepared-cache model now covers `bwrap`, `seatbelt`, and container runtimes, with container caches prepared in install containers and mounted read-only at runtime.
+4. Add stronger browser-level negative tests for replay, tampering, and forged delegated headers, especially around the router’s delegated `tools/call` admission path.
+5. If clustering ever becomes a requirement, replace in-process replay caches with shared state before claiming replay protection across replicas.
+6. Keep `testExplorer` as the main live validation target for Git/DPU and dependency-runtime validation, and `testCoral` as the main live validation target for SSO.
 
 This document reflects the current branch plus the latest uncommitted hardening changes in the working tree.
