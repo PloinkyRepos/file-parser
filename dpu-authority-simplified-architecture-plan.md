@@ -169,7 +169,7 @@ Purpose:
 Claims:
 
 - `iss = ploinky-router`
-- `aud = agent:dpuAgent` or `ploinky-agents`
+- `aud = agent:gitAgent`
 - `sid`
 - `sub` for the normalized user principal
 - normalized user claims:
@@ -185,6 +185,7 @@ Properties:
 
 - short-lived
 - signed by the router
+- audience-pinned to the immediate caller agent that is allowed to forward it
 - never minted by `gitAgent`
 
 ### 4.1.2 `agent_request_assertion`

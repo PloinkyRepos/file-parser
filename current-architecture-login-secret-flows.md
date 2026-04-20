@@ -28,18 +28,17 @@ Important:
 
 ### 1.2 Capability-driven wiring
 
-The current architecture uses manifest-declared contracts rather than hardcoded provider names for the normal `gitAgent -> secret store` path.
+The current architecture still contains a capability registry in Ploinky core, but the live Git/DPU path is no longer provider-neutral.
 
-- Consumers declare `requires.<alias>`
-- Providers declare `provides["<contract>"]`
-- Workspace bindings pin a consumer alias to a concrete provider in `.ploinky/agents.json`
-- Ploinky normalizes and resolves those declarations in `ploinky/cli/services/capabilityRegistry.js`
+- `gitAgent` now directly targets `dpuAgent`
+- the router verifies and relays delegated direct calls
+- `dpuAgent` owns the final authorization decision
+- the capability registry remains relevant for generic SSO/provider-neutral work, not for the Git/DPU storage path
 
-Current examples:
+Historical examples still present in manifests/docs:
 
 - `AssistOSExplorer/gitAgent/manifest.json`
-  - `requires.secretStore.contract = "secret-store/v1"`
-  - `requires.secretStore.maxScopes = ["secret:read", "secret:write"]`
+  - `capabilities.dpu.allowedRoles`
 - `AssistOSExplorer/dpuAgent/manifest.json`
   - `provides["secret-store/v1"]`
   - operations: `secret_get`, `secret_put`, `secret_delete`, `secret_grant`, `secret_revoke`, `secret_list`
@@ -52,8 +51,11 @@ When Ploinky starts an agent, the launcher injects:
 - `PLOINKY_AGENT_PRIVATE_KEY_PATH`
 - `PLOINKY_ROUTER_PUBLIC_KEY_JWK`
 - `PLOINKY_ROUTER_URL`
-- `PLOINKY_CAPABILITY_BINDINGS_JSON` for consumers
-- `PLOINKY_PROVIDER_BINDINGS_JSON` for providers
+
+It may still inject capability-binding metadata for other generic capability consumers/providers, but the live Git/DPU path no longer depends on:
+
+- `PLOINKY_CAPABILITY_BINDINGS_JSON`
+- `PLOINKY_PROVIDER_BINDINGS_JSON`
 
 This is what allows:
 
@@ -199,62 +201,58 @@ This is implemented primarily in:
 For delegated capability calls such as `gitAgent -> dpuAgent`:
 
 1. `gitAgent` signs a caller assertion with its private key
-2. the assertion is sent to the router in `x-ploinky-caller-assertion`
+2. `gitAgent` sends a direct JSON-RPC `tools/call` request to the routed DPU endpoint with:
+   - `x-ploinky-caller-assertion`
+   - `x-ploinky-user-context`
 3. the router verifies:
    - signature
-   - audience
+   - audience to the target provider
    - TTL
    - body hash
    - replay protection
-4. the router resolves the live capability binding from the registry
-5. the router intersects:
-   - caller-requested scopes
-   - consumer `maxScopes`
-   - binding-approved scopes
-   - provider-supported scopes
-6. the router mints `x-ploinky-invocation`
-7. the provider `AgentServer` verifies the invocation token before exposing it to the tool
+   - forwarded user token signature
+   - forwarded user token audience = caller agent principal
+4. the router relays the delegated request to DPU without re-authorizing the Git/DPU operation through capability bindings
+5. the provider `AgentServer` verifies the same two signed headers before exposing invocation metadata to the tool
 
 ### 3.3 Provider-side verification
 
-`ploinky/Agent/server/AgentServer.mjs` verifies the router token against:
+`ploinky/Agent/server/AgentServer.mjs` verifies delegated direct calls against:
 
-- router public key
+- caller assertion signature
 - expected audience = this agent principal
-- TTL
-- body hash
-- replay cache
+- caller assertion TTL
+- caller assertion body hash
+- caller assertion replay cache
+- router-signed user-context token
+- user-context token audience = caller assertion issuer
 
 If verification succeeds, the invocation metadata is made available to the tool wrapper.
 
-### 3.4 Current migration shim
+### 3.4 Current accepted wire formats
 
-The router still has a migration shim for legacy consumers/providers:
+For the Git/DPU path, agents now accept only:
 
-- it may still emit `x-ploinky-auth-info`
-- it may still populate `_meta.auth`
-
-That compatibility path remains unless `PLOINKY_SECURE_WIRE_STRICT` is enabled.
-
-Important: the secure path is already the real trust source. The legacy blob is transitional.
+- `x-ploinky-invocation` for first-party routed calls
+- or `x-ploinky-caller-assertion` + `x-ploinky-user-context` for delegated agent calls
 
 ## 4. Current Secret-Store Architecture
 
-### 4.1 Contract boundary
+### 4.1 Current Git/DPU boundary
 
-The contract boundary is:
+The current boundary is explicit and DPU-aware:
 
-- consumer alias in `gitAgent`: `secretStore`
-- contract name: `secret-store/v1`
+- caller: `gitAgent`
+- provider: `dpuAgent`
+- operations: `secret_get`, `secret_put`, `secret_delete`, `secret_grant`, `secret_revoke`, `secret_list`
 
-`gitAgent` uses `AssistOSExplorer/gitAgent/lib/secret-store-client.mjs` as its contract client.
+`gitAgent` uses `AssistOSExplorer/gitAgent/lib/secret-store-client.mjs` as its DPU client.
 
 That client:
 
-- reads `PLOINKY_CAPABILITY_BINDINGS_JSON`
-- resolves the provider route from the live binding
 - signs caller assertions
 - forwards `user_context_token` when available
+- sends direct JSON-RPC `tools/call` requests to the routed DPU endpoint
 - calls only generic operations:
   - `secret_get`
   - `secret_put`
@@ -348,14 +346,14 @@ sequenceDiagram
     Router->>Git: first-party invocation
     Git->>GH: device flow token exchange
     Git->>GH: /user and /user/emails
-    Git->>Router: secret_put + caller assertion
-    Router->>Router: verify assertion + resolve binding/scopes
-    Router->>DPU: secret_put + router invocation token
-    DPU->>DPU: verify invocation, ACL, binding, scope
+    Git->>Router: tools/call(secret_put) + caller assertion + user_context_token
+    Router->>Router: verify assertion + verify user token for caller agent
+    Router->>DPU: relay signed tools/call
+    DPU->>DPU: verify direct delegated headers + ACL + scope
     DPU-->>Router: secret stored
     Router-->>Git: success
     Git->>Router: secret_grant(agent:gitAgent, read) best-effort
-    Router->>DPU: delegated grant call
+    Router->>DPU: relay signed grant call
     DPU-->>Router: grant stored
     Router-->>Git: success
     Git-->>Browser: connected + tokenStored
@@ -372,22 +370,19 @@ sequenceDiagram
 5. `github-auth.mjs` calls `putStoredGitToken({ token, authInfo })`.
 6. `putStoredGitToken()` calls `secret_put("GIT_GITHUB_TOKEN", token)` through `secret-store-client.mjs`.
 7. `secret-store-client.mjs`:
-   - resolves the bound provider from `PLOINKY_CAPABILITY_BINDINGS_JSON`
    - signs a caller assertion with `gitAgent`’s private key
    - includes the forwarded `user_context_token` when present
-   - sends the request to `/mcps/<provider>/mcp`
-8. The router verifies the caller assertion and resolves the live `secretStore` binding.
-9. The router mints a router-signed invocation token scoped to `secret_put`.
-10. `dpuAgent` verifies the invocation token in `AgentServer`.
-11. `dpu_tool.mjs` reconstructs `authInfo` from the invocation.
-12. `dpu-store.mjs` enforces:
+   - sends a direct JSON-RPC `tools/call` request to the routed DPU endpoint
+8. The router verifies the caller assertion plus the forwarded user token for `agent:gitAgent`, then relays the call.
+9. `dpuAgent` verifies the delegated direct headers in `AgentServer`.
+10. `dpu_tool.mjs` reconstructs `authInfo` from the verified invocation metadata.
+11. `dpu-store.mjs` enforces:
     - `secret:write` scope
-    - provider binding membership
     - secret ACL rules
-13. `putSecret()` writes:
+12. `putSecret()` writes:
     - secret metadata to `state.json`
     - encrypted secret value to `secrets.json`
-14. `putStoredGitToken()` then performs a best-effort `secret_grant(key, agent:gitAgent, read)`.
+13. `putStoredGitToken()` then performs a best-effort `secret_grant(key, agent:gitAgent, read)`.
 
 ### 6.3 Ownership and ACL semantics
 
@@ -427,10 +422,10 @@ sequenceDiagram
 
     Browser->>Router: MCP call -> gitAgent tool
     Router->>Git: first-party invocation
-    Git->>Router: secret_get + caller assertion
-    Router->>Router: verify assertion + resolve binding/scopes
-    Router->>DPU: secret_get + router invocation token
-    DPU->>DPU: verify invocation, binding, scope, ACL
+    Git->>Router: tools/call(secret_get) + caller assertion + user_context_token
+    Router->>Router: verify caller assertion + verify user token for caller agent
+    Router->>DPU: relay tools/call + signed headers
+    DPU->>DPU: verify direct delegated headers + scope + ACL
     DPU-->>Router: secret value
     Router-->>Git: secret value
     Git-->>Browser: result using token
@@ -440,43 +435,35 @@ sequenceDiagram
 
 1. A browser-initiated request reaches `gitAgent`.
 2. `gitAgent` calls `getStoredGitToken({ authInfo })`.
-3. `getStoredGitToken()` calls `secret_get("GIT_GITHUB_TOKEN")` through the generic secret-store client.
+3. `getStoredGitToken()` calls `secret_get("GIT_GITHUB_TOKEN")` through the DPU-aware secret-store client.
 4. `gitAgent` signs a caller assertion with:
    - issuer = `agent:gitAgent`
-   - alias = `secretStore`
    - tool = `secret_get`
    - scope = `secret:read`
-5. The router verifies that assertion and resolves the live binding for `gitAgent:secretStore`.
-6. The router verifies that the requested scope is allowed by:
-   - `gitAgent.requires.secretStore.maxScopes`
-   - binding-approved scopes
-   - `dpuAgent.provides["secret-store/v1"].supportedScopes`
-7. The router mints the provider-facing invocation token.
-8. `dpuAgent` verifies the invocation token and reconstructs:
+5. `gitAgent` forwards the router-issued `user_context_token` it received on the first hop.
+6. The router verifies the delegated request cryptographically and relays it.
+7. `dpuAgent` verifies the direct delegated headers and reconstructs:
    - caller agent principal
    - delegated user
-   - binding id
-   - contract
    - scope
    - forwarded `user_context_token`
-9. `dpu-store.getSecretByKey()` enforces:
+8. `dpu-store.getSecretByKey()` enforces:
    - invocation scope
-   - provider binding membership
    - ACL access to the secret
-10. DPU reads the encrypted `secrets.json`, decrypts it with the derived secret-map key, and returns the requested value.
-11. `gitAgent` uses the token but does not persist it locally in its own workspace files.
+9. DPU reads the encrypted `secrets.json`, decrypts it with the derived secret-map key, and returns the requested value.
+10. `gitAgent` uses the token but does not persist it locally in its own workspace files.
 
 ## 8. Important Current Nuances
 
-### 8.1 `requires` is part of the communication path
+### 8.1 `requires` is no longer part of the Git/DPU communication path
 
-`gitAgent.manifest.json -> requires.secretStore` is not optional in the current design. It is how:
+`gitAgent.manifest.json -> requires.secretStore` was removed from the simplified Git/DPU path.
 
-- the capability registry validates the alias
-- the launcher injects the resolved binding
-- the router enforces the consumer’s declared max scopes
+The current Git/DPU path is intentionally DPU-aware:
 
-Without `requires.secretStore`, the provider-neutral `gitAgent -> dpuAgent` path would break.
+- `gitAgent` directly targets `dpuAgent`
+- the router only verifies and relays the signed delegated request
+- DPU owns the authorization decision
 
 ### 8.2 `capabilities.dpu.allowedRoles` is still live
 
@@ -484,17 +471,17 @@ Without `requires.secretStore`, the provider-neutral `gitAgent -> dpuAgent` path
 
 So today:
 
-- `requires` is architecture-critical for communication
 - `capabilities.dpu.allowedRoles` is a remaining DPU-specific grant-policy hook
 
-### 8.3 Provider binding enforcement is launch-time injected
+### 8.3 User-context tokens are scoped to the immediate caller agent
 
-Providers validate delegated bindings against `PLOINKY_PROVIDER_BINDINGS_JSON`.
+The router no longer mints broad delegated user tokens for all agents.
 
-That means:
+Instead:
 
-- the provider has its own defensive allowlist
-- but the allowlist is refreshed on restart, not dynamically in-process
+- first-hop routed calls mint a `user_context_token` with audience = the receiving agent principal
+- delegated agent calls must forward that token unchanged
+- the router and DPU verify that the token audience matches the caller assertion issuer
 
 ### 8.4 First-party and delegated calls coexist
 
@@ -505,30 +492,31 @@ There are two router-issued invocation styles:
 
 The GitHub token storage/retrieval path is delegated on the second hop.
 
-### 8.5 Legacy auth compatibility still exists
+### 8.5 DPU audit starts disabled by design
 
-The system still carries transitional support for:
+Fresh DPU state starts with audit disabled.
 
-- `x-ploinky-auth-info`
-- `_meta.auth`
+That is intentional and matches:
 
-The secure wire is already the intended trust path, but the compatibility shim is still present unless strict mode is enabled.
+- DPU docs
+- DPU tests
+- the admin audit configuration flow
 
 ## 9. Short Summary
 
 The current architecture is:
 
-- capability-driven at the consumer/provider boundary
-- router-mediated for all trusted inter-agent calls
-- provider-neutral for SSO in core
+- provider-neutral for SSO in Ploinky core
+- direct and DPU-aware for `gitAgent -> dpuAgent`
+- router-verified and relay-based for delegated Git/DPU calls
 - DPU-backed for GitHub token storage
 
 The current GitHub token handling is:
 
 - GitHub profile metadata in `gitAgent` local state
 - actual access token in DPU encrypted secret storage
-- token writes and reads performed through the generic `secret-store/v1` client
-- all delegated calls protected by caller assertions, router-minted invocation tokens, scope checks, and provider-side binding validation
+- token writes and reads performed through the DPU-aware signed client
+- all delegated calls protected by caller assertions, immediate-caller-scoped user-context tokens, DPU scope checks, and DPU ACL validation
 
 The two notable current leftovers are:
 

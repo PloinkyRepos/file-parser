@@ -182,12 +182,13 @@ Properties:
 - signed by router
 - short-lived
 - includes normalized user identity
+- audience-pinned to the immediate caller agent
 - forwarded by `gitAgent`, never minted by `gitAgent`
 
 Suggested claims:
 
 - `iss = ploinky-router`
-- `aud = ploinky-agents` or `agent:dpuAgent`
+- `aud = agent:gitAgent`
 - `sub`
 - `sid`
 - `user`

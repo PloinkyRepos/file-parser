@@ -1,64 +1,52 @@
-# Capability Wire / SSO / Git-DPU Implementation Handoff
+# DPU Authority / SSO Implementation Handoff
 
-This document is the continuity pack for a new agentic session. It is intended to be sufficient context to continue implementation, debug regressions, or extend the refactor without replaying the full conversation history.
+This document is the continuity pack for a new agentic session on the current branch state.
 
-It covers:
+It is meant to be enough context to continue implementation, debug regressions, review the architecture, or finish the remaining cleanup without replaying the full conversation history.
 
-- the original goals and invariants
-- the implementation prompt used for the coding session
-- the architectural decisions and the reasoning behind them
-- the repo-by-repo implementation that was committed
-- operational deployment/testing work done in local workspaces
-- tests run, known gaps, and debugging entry points
+The important update is that the architecture target was clarified mid-session:
 
-Important:
+- `Ploinky core` must stay agnostic of `gitAgent`, `dpuAgent`, and Keycloak specifics
+- `gitAgent` is allowed to be explicitly coupled to `dpuAgent`
+- `dpuAgent` is the authority for secret-operation authentication, delegated-user validation, scopes, ACLs, and grants
+- SSO still remains provider-agent-based and provider-neutral in Ploinky core
 
-- this handoff documents the committed implementation and the reasoning used during that implementation
-- after the implementation, the architecture requirement was clarified: `gitAgent` may be explicitly coupled to `dpuAgent`; only `Ploinky core` must remain uncoupled
-- the revised target architecture is documented in [dpu-authority-simplified-architecture-plan.md](/Users/danielsava/work/file-parser/dpu-authority-simplified-architecture-plan.md)
-- where this handoff conflicts with that revised target, treat the new DPU-authority plan as the authoritative target for future refactoring
+When this document conflicts with earlier capability-heavy assumptions, the simplified DPU-authority model is the authoritative target.
 
-## 1. Scope
+Related documents:
 
-This work refactored the Ploinky/AssistOSExplorer stack so that:
+- [dpu-authority-simplified-architecture-plan.md](/Users/danielsava/work/file-parser/dpu-authority-simplified-architecture-plan.md)
+- [dpu-authority-simplified-implementation-plan.md](/Users/danielsava/work/file-parser/dpu-authority-simplified-implementation-plan.md)
+- [principal-derivation-and-dpu-agent-policy-plan.md](/Users/danielsava/work/file-parser/principal-derivation-and-dpu-agent-policy-plan.md)
+- [current-architecture-login-secret-flows.md](/Users/danielsava/work/file-parser/current-architecture-login-secret-flows.md)
+- [ploinky-capability-wire-sso-refactor-plan.md](/Users/danielsava/work/file-parser/ploinky-capability-wire-sso-refactor-plan.md)
 
-1. Ploinky core becomes capability-driven instead of provider-name-driven.
-2. `gitAgent` stops directly depending on `dpuAgent`.
-3. inter-agent calls move to a router-mediated secure wire with signed assertions and signed provider-facing invocation grants.
-4. SSO is implemented by a bound provider agent, using `basic/keycloak` as the first `auth-provider/v1`.
-5. the existing dev/local auth paths remain available when SSO is disabled.
+## 1. Current Invariants
 
-Superseded target note:
+These are the current target invariants for ongoing work.
 
-- item 2 reflects the earlier stronger target used during implementation
-- the clarified target is now: `gitAgent` may directly depend on `dpuAgent`; only `Ploinky core` must remain agnostic
+1. `Ploinky core` must not contain `dpuAgent`-, `gitAgent`-, or Keycloak-specific runtime or authorization policy logic.
+2. `gitAgent` may explicitly know about and call `dpuAgent`.
+3. `dpuAgent` is the authority for secret-operation authentication, delegated-user validation, scope checks, grants, and ACL decisions.
+4. The `gitAgent -> dpuAgent` wire must be secure against impersonation, forged delegated user context, replay, and request tampering.
+5. SSO must remain provider-agent-based. `basic/keycloak` is the first provider, but Ploinky core must stay provider-neutral.
+6. When SSO is disabled, local auth and the existing dev-only web-token auth behavior must continue to work.
 
-## 2. Original User Request and Invariants
+## 2. Original Request and Prompt Context
 
-The original request was effectively:
+The original user request was to analyze:
 
-> Carefully analyze the code in `AssistOSExplorer/gitAgent`, `AssistOSExplorer/dpuAgent`, and `ploinky`, then design and implement a refactor so the following invariants hold:
->
-> 0. OOP design principles like SOLID and DRY should be obeyed.
-> 1. Ploinky must stop knowing about the specifics of `dpuAgent` or `gitAgent`. Any agent that keeps secrets behind `dpuAgent` should work the same way.
-> 2. The wire between caller agent and capability agent must be secure against impersonation, forged user context, replay, and scope-creep.
-> 3. SSO must be delivered by a Ploinky agent, not by code baked into Ploinky core. `ploinky enable sso` should wire in whichever agent the operator installs; Ploinky must not know Keycloak-specific concepts. When SSO is disabled, Ploinky’s current dev-only web-token auth stays as-is.
+- `AssistOSExplorer/gitAgent`
+- `AssistOSExplorer/dpuAgent`
+- `ploinky`
 
-Additional clarification added during the session:
+and refactor the architecture so:
 
-- there is already an existing provider in `basic/keycloak`
-- the first `auth-provider/v1` implementation must be that existing `basic/keycloak` agent
-- do not invent a separate `keycloakAgent`
+- Ploinky stops knowing concrete agent specifics
+- the inter-agent wire is secure
+- SSO is delivered by an agent, not by Ploinky core
 
-Later clarification that supersedes the stronger earlier reading of invariant 1:
-
-- `gitAgent` is allowed to be coupled to `dpuAgent`
-- `dpuAgent` may own authentication, authorization, access control, and scopes for secret operations
-- the decoupling requirement applies to `Ploinky core`, not necessarily to the `gitAgent <-> dpuAgent` pair
-
-## 3. Claude Code Execution Prompt
-
-This is the implementation prompt that was produced for Claude Code and used as the execution contract for the refactor:
+The first execution prompt used for implementation was:
 
 ```text
 Read and execute the refactor described in:
@@ -82,667 +70,481 @@ Implement the architecture in the markdown plan end to end so these invariants h
 3. Inter-agent capability calls are secured with router-mediated signed invocation grants that prevent impersonation, forged user context, replay, request tampering, and scope-creep.
 4. SSO is provided through a bound `auth-provider/v1` agent, starting with `basic/keycloak`.
 5. When SSO is disabled, the current dev-only web-token auth and local auth behavior remain unchanged.
-
-Important constraints:
-- Follow the repo’s AGENTS instructions.
-- Preserve existing behavior unless the plan explicitly changes it.
-- Make the implementation phased and coherent. If you need to add migration shims, do so exactly as described in the plan.
-- Do not leave consumer-side DPU-specific code in `gitAgent` as the final architecture.
-- Do not leave Keycloak-specific parsing or config logic in Ploinky core as the final architecture.
-- Keep browser pending-auth state in core; keep provider protocol specifics inside the SSO provider agent.
-- Use `basic/keycloak` as the first `auth-provider/v1` provider.
-- Update docs/specs required by the touched subprojects.
-- Add or update tests for the new capability registry, secure wire, migration behavior, and SSO bridge.
-
-Execution instructions:
-1. First, inspect the relevant code and map the exact files that need to change relative to the markdown plan.
-2. Then implement the work in phases that keep the repo buildable:
-   - shared capability/runtime additions
-   - runtime decoupling from hardcoded providers
-   - secure wire and verification
-   - `gitAgent` migration to generic secret-store client
-   - `basic/keycloak` extension to `auth-provider/v1`
-   - core auth bridge
-   - removal of legacy paths
-3. After each major phase, run the most relevant tests.
-4. At the end, run the broadest test set that is practical and summarize what passed, what failed, and any residual migration gaps.
-
-Required deliverables:
-- code changes implementing the plan
-- updated docs/specs where required
-- tests covering the new behavior
-- a concise final summary listing:
-  - major files changed
-  - security properties now enforced
-  - remaining migration shims, if any
-  - exact tests run
-
-If you find a direct conflict between the markdown plan and the current repo reality, do not silently improvise. Call out the conflict, explain the minimal adjustment, and continue with the closest implementation that preserves the plan’s intent.
 ```
 
-## 4. Key Constraints and Assumptions
+That prompt drove the first major implementation wave. After the clarification that `gitAgent` may be DPU-aware, the architecture was simplified and part of the earlier capability-driven Git/DPU path was intentionally unwound.
 
-These constraints shaped the implementation:
+## 3. Constraints That Shaped The Work
 
-### 4.1 Architectural constraints
+### 3.1 Architectural constraints
 
-- Ploinky core must be provider-neutral.
-- `gitAgent` must consume a contract, not a concrete provider.
-- the router is the trust mediator for inter-agent communication.
-- browser pending-auth state remains in core.
-- provider protocol logic lives in the provider agent runtime.
+- Ploinky core must remain generic.
+- `basic/keycloak` must be used as the first SSO provider implementation.
+- Browser pending-auth/session state stays in core.
+- Provider protocol logic stays in the provider agent runtime.
+- `dpuAgent` is allowed to own secret authorization logic.
 
-### 4.2 Security constraints
+### 3.2 Security constraints
 
-- no trusting raw forwarded user JSON for authorization
-- protect against:
-  - impersonation
-  - forged user context
-  - replay
-  - request tampering
-  - scope creep
+- no trusting raw forwarded user JSON
+- delegated user identity must be signed by the router
+- caller identity must be signed by the agent
+- replay must be rejected
+- request tampering must be rejected
 
-### 4.3 Product/runtime constraints
+### 3.3 Repo/process constraints
 
-- local/dev auth fallback must continue to work
-- SSO can be enabled only if a provider agent is installed and bound
-- existing deployments had to remain testable from the browser
+- branch name had to be the same across repos
+- unrelated dirty state was not to be reverted
+- generated artifacts were not to be committed
+- [AGENTS.md](/Users/danielsava/work/file-parser/AGENTS.md) was not to be committed
 
-### 4.4 Repo hygiene constraints
+## 4. Current Branch And Push State
 
-- branch name had to be the same across all repos
-- unrelated dirty workspace state was not to be reverted
-- generated artifacts such as `node_modules` were not to be committed
-
-## 5. Final Branches and Commits
-
-The same branch name was created in all affected repos:
+The same branch name is used across all repos:
 
 - `feature/capability-wire-sso`
 
-Committed revisions:
+Current pushed heads:
 
-| Repo | Branch | Commit | Summary |
+| Repo | Head | Summary | Pushed |
 | --- | --- | --- | --- |
-| root `file-parser` | `feature/capability-wire-sso` | `b3c93fb` | docs: capture current capability wire architecture |
-| `ploinky` | `feature/capability-wire-sso` | `576c532` | refactor: add secure capability wire and pluggable sso |
-| `AssistOSExplorer` | `feature/capability-wire-sso` | `09ae19a` | refactor: route git secrets through secret-store contract |
-| `basic` | `feature/capability-wire-sso` | `d09eea7` | feat: expose keycloak as auth-provider |
-| `coralFlow` | `feature/capability-wire-sso` | `1141458` | chore: bind coral sso to basic providers |
+| root `file-parser` | `0348050` | docs: capture simplified dpu authority architecture | yes |
+| `ploinky` | `46dfe07` | refactor: simplify routed agent auth relay | yes |
+| `AssistOSExplorer` | `7c0e32c` | refactor: let dpu authorize git secret access | yes |
+| `basic` | `d09eea7` | feat: expose keycloak as auth-provider | yes |
+| `coralFlow` | `1141458` | chore: bind coral sso to basic providers | yes |
 
-## 6. High-Level Implementation Summary
+Important prior commits on the same branch:
 
-### 6.1 What was implemented
+| Repo | Commit | Summary |
+| --- | --- | --- |
+| root `file-parser` | `b3c93fb` | docs: capture current capability wire architecture |
+| `ploinky` | `576c532` | refactor: add secure capability wire and pluggable sso |
+| `AssistOSExplorer` | `09ae19a` | refactor: route git secrets through secret-store contract |
 
-- capability registry in Ploinky core
-- manifest-driven runtime resource planning
-- agent keypair generation and launcher injection
-- signed caller assertion flow
-- router-issued signed invocation token flow
-- provider-side invocation verification
-- generic `secret-store/v1` consumer in `gitAgent`
-- `secret-store/v1` provider implementation in `dpuAgent`
-- provider-bound `auth-provider/v1` bridge in Ploinky
-- `basic/keycloak` runtime implementation of `auth-provider/v1`
-- CoralFlow updates to use `basic/keycloak`
-- Explorer UI fixes needed to test the Git/DPU path in browser
+The branch is now published upstream in all five repos.
 
-### 6.2 What was not fully eliminated
+## 5. Current Architecture
 
-- legacy auth compatibility shim still exists unless strict secure-wire mode is enabled
-- `gitAgent/manifest.json -> capabilities.dpu.allowedRoles` remains as a DPU-side grant policy hook
-- provider binding allowlist refresh is launcher-time, not hot-reloaded at runtime
-- full end-to-end replay/forgery browser integration coverage is still thinner than the unit coverage
+## 5.1 Ploinky core
 
-## 7. Major Design Decisions and Reasons
+Ploinky currently owns:
 
-This section is the shortest path to understanding why the implementation looks the way it does.
+- browser/session auth
+- local auth and dev-only web-token auth fallback
+- generic SSO bridge
+- agent identity/key provisioning
+- router ingress and agent MCP proxying
+- issuance and verification helpers for signed user-context tokens
 
-### 7.1 Capability registry instead of provider-name branching
+Ploinky should not decide:
 
-Decision:
+- DPU grants
+- DPU ACL rules
+- DPU scope policy
+- Git/DPU-specific authorization logic
 
-- add `provides` and `requires`
-- resolve actual provider bindings centrally in `ploinky/cli/services/capabilityRegistry.js`
+## 5.2 `basic/keycloak`
 
-Reason:
+`basic/keycloak` now provides the SSO provider runtime.
 
-- removes hardcoded `dpuAgent`/`keycloak` branching from core
-- lets consumers depend on a contract and alias instead of a provider name
-- gives the router a single place to validate consumer/provider/binding compatibility
+Ploinky core no longer owns:
 
-### 7.2 Router-mediated secure wire
+- Keycloak realm URL construction
+- Keycloak-specific claims parsing
+- OIDC provider-specific protocol details
 
-Decision:
+## 5.3 `gitAgent`
 
-- the calling agent signs a caller assertion
-- the router verifies it, resolves the live binding, then mints the provider-facing invocation token
+`gitAgent` is now intentionally DPU-aware again.
 
-Reason:
+It:
 
-- the router is the only place that knows both the authenticated user session and the live workspace binding
-- this closes impersonation and scope-creep problems better than peer-to-peer trust
-- provider agents only need to trust the router public key, not each caller directly
+- signs each DPU request with its own key
+- forwards the router-signed delegated `user_context_token`
+- calls DPU directly through the routed MCP path with a single signed JSON-RPC `tools/call`
+- no longer depends on capability binding metadata for secret storage
 
-### 7.3 Separate user context token from caller proof
+It still has one legacy DPU-specific manifest hook:
 
-Decision:
+- `capabilities.dpu.allowedRoles`
 
-- user context is router-issued and forwarded
-- caller proof is agent-signed
+That is still used as DPU grant policy metadata.
 
-Reason:
+## 5.4 `dpuAgent`
 
-- agents must not be able to mint arbitrary user identity
-- the router remains the trust root for “who is the user”
-- the agent remains accountable for “who is the caller”
+`dpuAgent` is now the authority for secret operations.
 
-### 7.4 Keep pending browser-auth state in core
+It verifies:
 
-Decision:
+- caller assertion signature
+- caller assertion audience and expiry
+- caller assertion replay token
+- caller assertion request hash
+- delegated user token signature
+- delegated user token expiry
+- delegated user token audience against the immediate caller agent, not a broad shared audience
 
-- `genericAuthBridge.js` stores pending browser-auth state
-- provider runtime receives opaque `providerState`
+It enforces:
 
-Reason:
+- caller/tool/scope policy
+- secret ACLs and grants
+- final authorization
 
-- callback integrity belongs at the HTTP boundary owned by core
-- provider-specific PKCE/nonce logic still belongs in the provider runtime
-- this keeps Ploinky provider-neutral while preserving correct browser flow handling
+The router no longer re-authorizes the Git/DPU call via capability bindings.
 
-### 7.5 Move Keycloak specifics into `basic/keycloak/runtime`
+## 6. Current Secure Wire Model
 
-Decision:
+The current simplified Git/DPU path uses two signed artifacts:
 
-- delete core `keycloakClient.js`
-- add `basic/keycloak/runtime/index.mjs`
+1. `x-ploinky-caller-assertion`
+2. `x-ploinky-user-context`
 
-Reason:
+### 6.1 `x-ploinky-user-context`
 
-- Keycloak-specific URL construction, token verification, claim extraction, and role mapping should not live in core
-- the same core path can later support another provider such as Okta or another OIDC implementation
-
-### 7.6 Keep a best-effort grant from `gitAgent` to itself
-
-Decision:
-
-- `putStoredGitToken()` still best-effort calls `secret_grant(key, agent:gitAgent, read)`
-
-Reason:
-
-- this keeps current DPU access semantics working while the secret is still effectively user-owned
-- it avoids breaking the existing agent-read pattern during transition
-- it is not the cleanest final design, but it preserves compatibility with the current DPU ACL model
-
-### 7.7 Add provider-side binding validation in DPU
-
-Decision:
-
-- DPU validates `binding_id`, consumer principal, and approved scopes against `PLOINKY_PROVIDER_BINDINGS_JSON`
-
-Reason:
-
-- the router is the primary policy gate, but the provider should still defend itself
-- this catches mismatched bindings and provider misuse even if a request reaches the provider
-
-### 7.8 Fix Explorer UI instead of treating browser failures as backend-only
-
-Decision:
-
-- patch plugin discovery, repo loading, and GitHub identity prefill in Explorer UI
-
-Reason:
-
-- the refactor needed real browser testing
-- the Git/DPU path was being masked by frontend issues unrelated to the secure-wire changes
-- without these fixes, the backend implementation could not be reliably validated in the UI
-
-## 8. Repo-by-Repo Implementation
-
-## 8.1 Root `file-parser`
+This is a router-signed delegated user token.
 
 Purpose:
 
-- handoff and design documentation
+- prove the logged-in human user to downstream agents
 
-Committed files:
+Properties:
 
-- `current-architecture-login-secret-flows.md`
-- `ploinky-capability-wire-sso-refactor-plan.md`
+- minted by the router
+- short-lived
+- audience-pinned to the immediate caller agent that is allowed to forward it
+- forwarded unchanged by `gitAgent`
+- never minted by `gitAgent`
 
-Reason:
+### 6.2 `x-ploinky-caller-assertion`
 
-- preserve the reviewed plan and the as-built architecture in repo-visible form
+This is an agent-signed per-request assertion.
 
-## 8.2 `ploinky`
+Purpose:
 
-### Implemented
+- prove the caller is `gitAgent`
+- bind the proof to the request body/tool
 
-1. Shared secure-wire libraries
-   - `Agent/lib/toolEnvelope.mjs`
-   - `Agent/lib/wireSign.mjs`
-   - `Agent/lib/wireVerify.mjs`
+Properties:
 
-2. Provider-neutral capability model
-   - `cli/services/capabilityRegistry.js`
-   - `cli/services/runtimeResourcePlanner.js`
+- signed by the agent private key
+- contains `jti`
+- short TTL
+- includes request hash
 
-3. Key management and launcher injection
-   - `cli/services/agentKeystore.js`
-   - `cli/services/docker/agentServiceManager.js`
-   - `cli/services/bwrap/bwrapServiceManager.js`
+### 6.3 Router behavior
 
-4. Router secure-wire support
-   - `cli/server/mcp-proxy/secureWire.js`
-   - `cli/server/mcp-proxy/index.js`
-   - `cli/server/RoutingServer.js`
-   - `Agent/server/AgentServer.mjs`
+The current router behavior for `/mcps/*` is:
 
-5. Provider-neutral SSO bridge
-   - `cli/server/auth/genericAuthBridge.js`
-   - `cli/server/auth/service.js`
-   - `cli/server/authHandlers.js`
-   - `cli/commands/ssoCommands.js`
-   - `cli/services/sso.js`
+- if a valid browser/user request arrives, treat it as a first-party routed call
+- if a delegated agent request arrives, parse the JSON-RPC payload and verify the caller assertion plus forwarded user token before forwarding
+- otherwise reject
 
-6. Dependency/help/status cleanup
-   - `cli/services/bootstrapManifest.js`
-   - `cli/services/workspaceDependencyGraph.js`
-   - `cli/services/help.js`
-   - `cli/services/status.js`
-   - `cli/services/config.js`
-   - `cli/services/workspaceUtil.js`
+The router no longer does the following for the Git/DPU path:
 
-7. Deleted core Keycloak-specific files
-   - `cli/server/auth/config.js`
-   - `cli/server/auth/keycloakClient.js`
+- capability-binding-based nested authorization
+- provider alias resolution for Git secret calls
+- delegated invocation-token minting for nested Git/DPU calls
+- legacy `x-ploinky-auth-info` compatibility in this path
 
-8. Docs/tests
-   - `docs/specs/DS-capability-and-secure-wire.md`
-   - `tests/unit/capabilityRegistry.test.mjs`
-   - `tests/unit/genericAuthBridge.test.mjs`
-   - `tests/unit/runtimeResourcePlanner.test.mjs`
-   - `tests/unit/secureWire.test.mjs`
-   - `tests/unit/secureWireDelegation.test.mjs`
-   - `tests/unit/ssoService.test.mjs`
-   - `tests/unit/workspaceDependencyGraph.test.mjs`
+### 6.4 DPU verification sequence
 
-### Reasons behind the main file groups
+DPU verifies, in order:
 
-- `capabilityRegistry.js`
-  - central source of truth for `provides`, `requires`, bindings, and scope intersection
-- `runtimeResourcePlanner.js`
-  - replace provider-name-based storage/env injection with manifest-driven planning
-- `agentKeystore.js`
-  - every agent needs key material for caller assertions or invocation verification
-- `secureWire.js`
-  - router must verify assertions and mint provider-facing grants
-- `genericAuthBridge.js`
-  - SSO must be provider-neutral in core while still handling HTTP session concerns
+1. caller assertion signature using the caller agent public key
+2. caller assertion audience/TTL
+3. `jti` replay protection
+4. request body hash
+5. user-context token signature using the router public key
+6. user-context token TTL and audience = caller assertion issuer
+7. DPU-side tool/scope allowlist
+8. DPU ACL/grant policy
 
-## 8.3 `AssistOSExplorer`
+## 7. Login And Secret Flows
 
-### Implemented in `dpuAgent`
+## 7.1 Local login flow
 
-- added `provides["secret-store/v1"]` to `dpuAgent/manifest.json`
-- added generic secret operation aliases to `dpuAgent/mcp-config.json`
-- updated `dpuAgent/tools/dpu_tool.mjs` to consume invocation metadata
-- updated `dpuAgent/server/standalone-mcp-server.mjs` to verify secure-wire inputs
-- updated `dpuAgent/lib/dpu-store.mjs` to enforce:
-  - invocation scope
-  - provider binding allowlist
-  - consumer principal match
-  - approved-scope match
-- updated `dpuAgent/lib/dpu-store-internal/storage.mjs`
-  - aligned audit default behavior
-  - confirmed secret map remains encrypted
-- updated DPU docs and tests
+Used in `testExplorer`.
 
-Committed DPU files:
+1. Browser logs in through Ploinky local auth.
+2. Ploinky creates the browser session.
+3. When the browser calls a tool through the router, Ploinky can mint a short-lived delegated user token.
+4. `gitAgent` receives the user token and, if it needs DPU, signs a caller assertion and forwards both headers.
+5. DPU verifies both artifacts and authorizes or rejects the secret operation.
 
-- `dpuAgent/docs/mcp-tools.html`
-- `dpuAgent/docs/specs/DS05-runtime-and-mcp.md`
-- `dpuAgent/lib/dpu-store-internal/storage.mjs`
-- `dpuAgent/lib/dpu-store.mjs`
-- `dpuAgent/manifest.json`
-- `dpuAgent/mcp-config.json`
-- `dpuAgent/server/standalone-mcp-server.mjs`
-- `dpuAgent/tests/dpu-store.test.mjs`
-- `dpuAgent/tools/dpu_tool.mjs`
+## 7.2 SSO login flow
 
-### Implemented in `gitAgent`
+Used in `testCoral`.
 
-- removed direct DPU client
-  - deleted `gitAgent/lib/dpu-secret-client.mjs`
-- added generic contract client
-  - `gitAgent/lib/secret-store-client.mjs`
-- updated GitHub auth to store/retrieve token via the contract client
-  - `gitAgent/lib/github-auth.mjs`
-- updated `gitAgent/tools/git_tool.mjs` to forward invocation/user-context metadata
-- updated manifest to use `requires.secretStore`
-- documented the new client contract
+1. Browser starts `/auth/login`.
+2. Ploinky core uses the generic auth bridge.
+3. The bridge calls the bound `auth-provider/v1` provider in `basic/keycloak`.
+4. `basic/keycloak` performs provider-specific OIDC work and returns normalized user data.
+5. Ploinky creates the browser session and from then on issues the same normalized delegated user token shape to downstream agents.
 
-Committed Git files:
+The important boundary is:
 
-- `gitAgent/docs/execution-workflow.html`
-- `gitAgent/docs/specs/DS01-agent-overview.md`
-- `gitAgent/docs/specs/DS06-secret-store-v1-client.md`
-- `gitAgent/lib/github-auth.mjs`
-- `gitAgent/lib/secret-store-client.mjs`
-- `gitAgent/manifest.json`
-- `gitAgent/tests/unit/gitIdentityPrefill.test.mjs`
-- `gitAgent/tools/git_tool.mjs`
-- deleted `gitAgent/lib/dpu-secret-client.mjs`
+- Keycloak-specific logic is in `basic/keycloak`
+- Ploinky core only sees normalized provider-neutral identity data
 
-### Implemented in `explorer`
+## 7.3 GitHub token storage flow
 
-- fixed plugin discovery so symlinked/local repo layouts still expose IDE plugins
-- fixed Git modal to load repo overviews during the credentials gate
-- fixed GitHub identity prefill when the modal is opened from the workspace root instead of a specific repo
+Current flow after the simplification:
 
-Committed Explorer files:
+1. User completes GitHub auth in Explorer.
+2. Browser calls `gitAgent` through the router.
+3. Router authenticates the browser session and passes the request through.
+4. `gitAgent` signs a direct JSON-RPC `tools/call` request for DPU.
+5. `gitAgent` forwards the router-signed user token in `x-ploinky-user-context`.
+6. DPU verifies both artifacts and confirms the user token audience matches `agent:gitAgent`.
+7. DPU stores the GitHub token under its secret policy.
 
-- `explorer/tests/unit/idePluginsAggregation.test.js`
-- `explorer/utils/ide-plugins.mjs`
-- `gitAgent/IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal-utils.js`
-- `gitAgent/IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal.js`
+## 7.4 GitHub token retrieval flow
 
-### Reasons behind the Explorer/UI changes
+1. User triggers a Git action requiring the stored token.
+2. Browser calls `gitAgent` through the router.
+3. `gitAgent` issues a DPU `tools/call` request signed with its private key.
+4. `gitAgent` forwards the delegated user token.
+5. DPU verifies the call, checks the user token audience against `gitAgent`, and then checks grants/ACLs.
+6. If authorized, DPU returns the secret material to `gitAgent`.
+7. `gitAgent` uses the token for the Git operation.
 
-- without plugin discovery fixes, the Git button did not appear reliably in the deployed Explorer workspace
-- without repo loading fixes, the Git modal could show a fake “Loading repositories…” state and hide the backend result
-- without identity prefill fixes, the successful GitHub connection looked broken even when the backend had correct profile data
+## 8. Repo-By-Repo Implementation Summary
 
-## 8.4 `basic`
+## 8.1 `ploinky`
 
-Implemented:
+Main outcomes:
 
-- exposed `keycloak` as a capability provider for `auth-provider/v1`
-- added `keycloak/runtime/index.mjs`
-- updated `keycloak/manifest.json`
+- capability-driven runtime and generic SSO bridge landed in the first wave
+- SSO provider binding moved into core without Keycloak-specific logic
+- later simplification removed Git/DPU nested delegated authorization from the router
 
-Committed files:
+Important files:
 
-- `keycloak/manifest.json`
-- `keycloak/runtime/index.mjs`
+- [ploinky/cli/server/RoutingServer.js](/Users/danielsava/work/file-parser/ploinky/cli/server/RoutingServer.js)
+  - `/mcps/*` admission now defers delegated-call verification to the MCP proxy instead of relying on header presence
+- [ploinky/cli/server/mcp-proxy/index.js](/Users/danielsava/work/file-parser/ploinky/cli/server/mcp-proxy/index.js)
+  - verifies delegated direct `tools/call` requests before forwarding them
+  - no longer performs Git/DPU delegated re-authorization
+- [ploinky/cli/server/mcp-proxy/secureWire.js](/Users/danielsava/work/file-parser/ploinky/cli/server/mcp-proxy/secureWire.js)
+  - now focuses on first-party helpers, delegated direct-call verification, and immediate-caller-scoped user-context tokens
+- [ploinky/Agent/lib/runtimeWire.mjs](/Users/danielsava/work/file-parser/ploinky/Agent/lib/runtimeWire.mjs)
+  - generic runtime-side verification for direct caller assertion + user-context headers
+- [ploinky/Agent/lib/wireSign.mjs](/Users/danielsava/work/file-parser/ploinky/Agent/lib/wireSign.mjs)
+  - caller assertions now include `jti`
+- [ploinky/Agent/lib/wireVerify.mjs](/Users/danielsava/work/file-parser/ploinky/Agent/lib/wireVerify.mjs)
+  - `jti` is mandatory; replay protection no longer silently degrades
+- [ploinky/cli/services/docker/agentServiceManager.js](/Users/danielsava/work/file-parser/ploinky/cli/services/docker/agentServiceManager.js)
+- [ploinky/cli/services/bwrap/bwrapServiceManager.js](/Users/danielsava/work/file-parser/ploinky/cli/services/bwrap/bwrapServiceManager.js)
+  - inject agent key material and public-key registry
+  - mount the private key at `/run/ploinky-agent.key` instead of `/tmp/ploinky-agent.key`
+  - no longer inject provider/consumer capability binding env or the now-dead strict-wire env for the Git/DPU path
+- [ploinky/cli/server/auth/genericAuthBridge.js](/Users/danielsava/work/file-parser/ploinky/cli/server/auth/genericAuthBridge.js)
+- [ploinky/cli/server/auth/service.js](/Users/danielsava/work/file-parser/ploinky/cli/server/auth/service.js)
+- [ploinky/cli/services/sso.js](/Users/danielsava/work/file-parser/ploinky/cli/services/sso.js)
+- [ploinky/cli/commands/ssoCommands.js](/Users/danielsava/work/file-parser/ploinky/cli/commands/ssoCommands.js)
+  - generic SSO provider selection and bridge logic
 
-Reason:
+## 8.2 `AssistOSExplorer`
 
-- preserve provider neutrality in core while reusing the already existing Keycloak agent repo
+Main outcomes:
 
-## 8.5 `coralFlow`
+- `gitAgent` first moved to a generic `secret-store/v1` client
+- then the Git/DPU path was simplified so `gitAgent` directly targets DPU again
+- DPU now verifies the caller assertion and delegated user token itself
 
-Implemented:
+Important files:
 
-- updated manifest/setup/deploy scripts to use `basic/keycloak` and `basic/postgres`
-- aligned development setup with the new provider-bound SSO path
+- [AssistOSExplorer/gitAgent/lib/secret-store-client.mjs](/Users/danielsava/work/file-parser/AssistOSExplorer/gitAgent/lib/secret-store-client.mjs)
+  - now acts as an explicit DPU-aware client
+  - sends one signed JSON-RPC `tools/call` per DPU operation using raw `fetch`
+  - no MCP SDK session is used for the DPU hop
+  - no longer reads capability-binding env
+- [AssistOSExplorer/gitAgent/manifest.json](/Users/danielsava/work/file-parser/AssistOSExplorer/gitAgent/manifest.json)
+  - `requires.secretStore` removed
+  - legacy `capabilities.dpu.allowedRoles` remains
+- [AssistOSExplorer/dpuAgent/server/standalone-mcp-server.mjs](/Users/danielsava/work/file-parser/AssistOSExplorer/dpuAgent/server/standalone-mcp-server.mjs)
+  - verifies direct caller assertion + user token path
+- [AssistOSExplorer/dpuAgent/lib/dpu-store.mjs](/Users/danielsava/work/file-parser/AssistOSExplorer/dpuAgent/lib/dpu-store.mjs)
+  - no longer depends on provider-binding env for Git/DPU secret authorization
+  - delegated owner + agent-read resolves to effective write by design; agent grants do not downgrade owner rights
+- [AssistOSExplorer/shared/invocation-auth.mjs](/Users/danielsava/work/file-parser/AssistOSExplorer/shared/invocation-auth.mjs)
+  - shared helper for reconstructing `authInfo` from verified invocation metadata
 
-Committed files:
+UI and browser-test support work:
 
-- `coral-agent/manifest.json`
-- `coral-agent/scripts/deploy-development/startCoralDevel.sh`
-- `coral-agent/scripts/setup/dev.sh`
-- `coral-agent/scripts/setup/prod.sh`
+- Explorer plugin discovery was fixed so the Git toolbar plugin renders reliably in the file explorer
+- the Git modal repo-loading and identity-prefill bugs were fixed
 
-Reason:
+## 8.3 `basic`
 
-- CoralFlow was used as the real browser validation target for the new SSO architecture
+Main outcome:
 
-## 9. Non-Committed Operational / Workspace Changes
+- `basic/keycloak` is now the first `auth-provider/v1` implementation
 
-These were used for testing and deployment but were not committed into the product repos.
+Important area:
 
-### 9.1 `testCoral`
+- [basic/keycloak/runtime/index.mjs](/Users/danielsava/work/file-parser/basic/keycloak/runtime/index.mjs)
+
+## 8.4 `coralFlow`
+
+Main outcome:
+
+- CoralFlow setup now binds SSO through `basic/keycloak`
+
+This repo mainly exists here as a real deployment target to validate the SSO work from a browser.
+
+## 8.5 root `file-parser`
+
+Main outcome:
+
+- architecture, implementation, and handoff docs were added here to keep cross-repo reasoning in one place
+
+Important docs:
+
+- [current-architecture-login-secret-flows.md](/Users/danielsava/work/file-parser/current-architecture-login-secret-flows.md)
+- [dpu-authority-simplified-architecture-plan.md](/Users/danielsava/work/file-parser/dpu-authority-simplified-architecture-plan.md)
+- [dpu-authority-simplified-implementation-plan.md](/Users/danielsava/work/file-parser/dpu-authority-simplified-implementation-plan.md)
+
+## 9. Deployments And Browser-Test Workspaces
+
+## 9.1 `testCoral`
 
 Workspace:
 
 - `/Users/danielsava/work/testCoral`
 
-Operational outcome:
+Purpose:
 
-- CoralFlow was deployed and reachable in browser
-- SSO was verified working through the new provider-bound path
+- browser-level validation of the new provider-agent SSO path
 
-Notable workspace-side work performed during testing:
+State achieved:
 
-- local `.ploinky` workspace isolation so the deployment does not inherit `~/.ploinky`
-- sync local `basic` and `coralFlow` sources into workspace repos
-- stop conflicting workspaces that occupied router/database ports
+- CoralFlow deployed and reachable
+- SSO works through `basic/keycloak`
+- app tested from browser
 
-Observed browser endpoints during validation:
+Useful endpoints/credentials used during setup:
 
 - app: `http://127.0.0.1:8080`
 - dashboard: `http://127.0.0.1:8080/dashboard`
 - Keycloak: `http://127.0.0.1:8180`
+- test user: `sysadmin` / `coralAdmin`
+- Keycloak admin: `admin` / `admin`
 
-### 9.2 `testExplorer`
+## 9.2 `testExplorer`
 
 Workspace:
 
 - `/Users/danielsava/work/testExplorer`
 
-Operational outcome:
+Purpose:
 
-- AssistOSExplorer deployed for browser testing of `gitAgent -> dpuAgent`
-- Git plugin was made visible and usable
-- GitHub login + repo listing + DPU-backed token path were exercised
+- browser-level validation of the Git/DPU path
 
-Workspace-side changes during testing:
+Important current state:
 
-- capability binding in workspace config:
-  - `AssistOSExplorer/gitAgent:secretStore -> AssistOSExplorer/dpuAgent`
-- synced local `AssistOSExplorer` and `basic` sources into `.ploinky/repos`
-- removed stale provider records from the workspace state when necessary
-- created a real test git repo:
-  - `/Users/danielsava/work/testExplorer/demo-repo`
+- Explorer is reachable at `http://127.0.0.1:8088`
+- local auth is used here, not SSO
+- the stale capability binding `AssistOSExplorer/gitAgent:secretStore -> dpuAgent` was removed from `.ploinky/agents.json`
+- `gitAgent` no longer needs `PLOINKY_CAPABILITY_BINDINGS_JSON`
+- `dpuAgent` no longer needs `PLOINKY_PROVIDER_BINDINGS_JSON`
+- both use `PLOINKY_AGENT_PUBLIC_KEYS_JSON`
+- the workspace was redeployed after the router-admission and immediate-caller-audience hardening changes
 
-Observed browser endpoint:
+Credentials:
 
-- Explorer: `http://127.0.0.1:8088`
+- `admin` / `admin`
+- `user` / `user`
 
-## 10. Tests and Verification
+Live verification already performed:
 
-### 10.1 Automated tests run
+- router health on `127.0.0.1:8088`
+- authenticated `git_auth_status` through `router -> gitAgent -> dpuAgent`
+- Git modal now shows repos and identity autofill logic behaves correctly after the fixes
+- after the later hardening pass, the workspace was redeployed again and container/runtime readiness was confirmed; the new audience rule is unit-verified, but a fresh curl-based local-auth MCP smoke was inconclusive after restart
 
-Ploinky:
+## 10. Tests And Verification
 
+Tests run during the session included:
+
+- `node --check` on touched JS/MJS files in `ploinky`, `AssistOSExplorer`, and `basic`
 - `node --test ploinky/tests/unit/secureWire.test.mjs`
+- `node --test ploinky/tests/unit/runtimeWire.test.mjs`
 - `node --test ploinky/tests/unit/capabilityRegistry.test.mjs`
-- `node --test ploinky/tests/unit/secureWireDelegation.test.mjs`
 - `node --test ploinky/tests/unit/genericAuthBridge.test.mjs`
 - `node --test ploinky/tests/unit/ssoService.test.mjs`
-- `node --test ploinky/tests/unit/runtimeResourcePlanner.test.mjs`
-
-AssistOSExplorer:
-
-- `npm test` in `AssistOSExplorer/dpuAgent`
+- `npm test` in [AssistOSExplorer/dpuAgent](/Users/danielsava/work/file-parser/AssistOSExplorer/dpuAgent)
+- `node --test AssistOSExplorer/dpuAgent/tests/dpu-store.test.mjs`
+- `node --test AssistOSExplorer/gitAgent/tests/unit/secretStoreClient.test.mjs`
 - `node --test AssistOSExplorer/gitAgent/tests/unit/*.test.mjs`
-- `node --test AssistOSExplorer/explorer/tests/unit/idePluginsAggregation.test.js`
-- `node --test AssistOSExplorer/gitAgent/tests/unit/gitIdentityPrefill.test.mjs`
 
-Syntax validation that was run during the work:
+Additional live verification:
 
-- `node --check` on touched JS/MJS files after major changes
+- `testCoral` SSO browser flow works
+- `testExplorer` Git/DPU flow works after redeploy
+- authenticated `git_auth_status` succeeds through the routed path
+- later hardening passes were unit-verified and redeployed to `testExplorer`
 
-### 10.2 Manual/browser verification done
+## 11. Known Gaps / Remaining Work
 
-- CoralFlow SSO login works through `basic/keycloak`
-- Explorer local auth works in `testExplorer`
-- Git plugin appears in the Explorer toolbar
-- GitHub OAuth/device flow reaches connected state
-- Git repo discovery works in the Git modal
-- GitHub identity autofill was fixed in the modal
-- `git_auth_status` successfully reaches the live `gitAgent -> router -> dpuAgent` path
+These are the most relevant remaining items.
 
-## 11. Current Known Gaps / Follow-Up Targets
-
-These are the most relevant follow-up items for a new session:
-
-### 11.1 Still-open architectural debt
-
-1. `gitAgent.manifest.json -> capabilities.dpu.allowedRoles`
-   - still used by DPU as a provider-side grant cap
-   - should eventually be replaced by a provider-neutral contract/policy model
-
-2. legacy auth compatibility path
-   - `x-ploinky-auth-info` and `_meta.auth` still exist for migration compatibility
-   - strict mode can disable them, but they have not been fully deleted
-
-3. provider binding allowlist refresh
-   - provider allowlists come from launcher-injected `PLOINKY_PROVIDER_BINDINGS_JSON`
-   - binding changes require a restart to refresh provider-side defensive checks
-
-### 11.2 Testing gaps
-
-1. no full browser/integration replay-attack harness
-2. no full forged-caller end-to-end HTTP suite beyond current unit coverage
-3. no broad multi-agent nested delegation test beyond current focused unit tests
-
-### 11.3 Repo state intentionally left uncommitted
-
-`ploinky` still has unrelated local changes or generated artifacts not included in the feature commit:
-
-- `globalDeps/package.json`
-- `globalDeps/package-lock.json`
-- `globalDeps/node_modules/`
-- `node_modules/`
-- some extra untracked docs/scripts/test outputs
-
-`AssistOSExplorer` still has unrelated untracked local files not included:
-
-- `CLAUDE.md`
-- `_analysis_repos/`
-- `docs/analysis-explorer-agents.md`
-
-The root repo also contains many unrelated dirty/untracked items that were not part of this feature work.
+1. There are still legacy mentions of the earlier capability-heavy model in some docs and some non-Git/DPU code paths.
+2. `capabilities.dpu.allowedRoles` is still a DPU-specific coupling point in `gitAgent/manifest.json`.
+3. The secure-wire and capability-registry code still contain more machinery than the simplified Git/DPU architecture strictly needs.
+4. Replay protection is currently in-process only:
+   - router delegated replay cache is process-local
+   - DPU direct-caller replay cache is process-local
+   Clustering either component would require shared replay state.
+5. Full browser-driven end-to-end negative-path tests for replay/forgery are still thinner than the unit coverage.
+6. The DPU audit default is intentionally `disabled` on fresh state. This is documented in DPU specs and tests; do not treat it as an accidental regression unless product requirements change.
+7. There is an unrelated local diff in `ploinky/globalDeps/package.json` (`achillesAgentLib` branch pin). Treat it as separate from the wire/SSO work unless explicitly requested.
+8. The handoff branch is pushed, but the root `file-parser` repo still contains unrelated uncommitted local files outside this work. Do not blindly commit everything.
 
 ## 12. Debugging Map
 
-If a future session needs to debug specific issues, start here:
+If something breaks, start here.
 
-### 12.1 Capability/binding resolution
+### 12.1 Browser login / SSO
 
-- `ploinky/cli/services/capabilityRegistry.js`
+- [ploinky/cli/server/auth/service.js](/Users/danielsava/work/file-parser/ploinky/cli/server/auth/service.js)
+- [ploinky/cli/server/auth/genericAuthBridge.js](/Users/danielsava/work/file-parser/ploinky/cli/server/auth/genericAuthBridge.js)
+- [basic/keycloak/runtime/index.mjs](/Users/danielsava/work/file-parser/basic/keycloak/runtime/index.mjs)
 
-Questions it answers:
+### 12.2 Router admission / delegated header relay
 
-- which provider is bound to a consumer alias
-- which scopes are granted or denied
-- what provider principal/route should be used
+- [ploinky/cli/server/RoutingServer.js](/Users/danielsava/work/file-parser/ploinky/cli/server/RoutingServer.js)
+- [ploinky/cli/server/mcp-proxy/index.js](/Users/danielsava/work/file-parser/ploinky/cli/server/mcp-proxy/index.js)
+- [ploinky/cli/server/mcp-proxy/secureWire.js](/Users/danielsava/work/file-parser/ploinky/cli/server/mcp-proxy/secureWire.js)
 
-### 12.2 Agent env injection / runtime wiring
+### 12.3 Agent signing / verification
 
-- `ploinky/cli/services/docker/agentServiceManager.js`
-- `ploinky/cli/services/bwrap/bwrapServiceManager.js`
-- `ploinky/cli/services/runtimeResourcePlanner.js`
+- [ploinky/Agent/lib/wireSign.mjs](/Users/danielsava/work/file-parser/ploinky/Agent/lib/wireSign.mjs)
+- [ploinky/Agent/lib/wireVerify.mjs](/Users/danielsava/work/file-parser/ploinky/Agent/lib/wireVerify.mjs)
+- [ploinky/Agent/lib/runtimeWire.mjs](/Users/danielsava/work/file-parser/ploinky/Agent/lib/runtimeWire.mjs)
+- [AssistOSExplorer/dpuAgent/server/standalone-mcp-server.mjs](/Users/danielsava/work/file-parser/AssistOSExplorer/dpuAgent/server/standalone-mcp-server.mjs)
 
-Questions it answers:
+### 12.4 Git secret storage / retrieval
 
-- which env vars an agent receives
-- whether router URL, keys, and bindings are available in the runtime
-- where persistent storage mounts come from
+- [AssistOSExplorer/gitAgent/lib/secret-store-client.mjs](/Users/danielsava/work/file-parser/AssistOSExplorer/gitAgent/lib/secret-store-client.mjs)
+- [AssistOSExplorer/dpuAgent/lib/dpu-store.mjs](/Users/danielsava/work/file-parser/AssistOSExplorer/dpuAgent/lib/dpu-store.mjs)
 
-### 12.3 Secure wire
+### 12.5 Explorer UI Git behavior
 
-- `ploinky/cli/server/mcp-proxy/secureWire.js`
-- `ploinky/Agent/lib/wireSign.mjs`
-- `ploinky/Agent/lib/wireVerify.mjs`
-- `ploinky/Agent/server/AgentServer.mjs`
+- [AssistOSExplorer/explorer/utils/ide-plugins.mjs](/Users/danielsava/work/file-parser/AssistOSExplorer/explorer/utils/ide-plugins.mjs)
+- [AssistOSExplorer/gitAgent/IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal.js](/Users/danielsava/work/file-parser/AssistOSExplorer/gitAgent/IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal.js)
+- [AssistOSExplorer/gitAgent/IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal-utils.js](/Users/danielsava/work/file-parser/AssistOSExplorer/gitAgent/IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal-utils.js)
 
-Questions it answers:
+## 13. Immediate Next Steps For A New Session
 
-- why a caller assertion is rejected
-- why an invocation token is rejected
-- whether scope/binding/provider mismatch is happening
+If continuing implementation, the highest-signal next steps are:
 
-### 12.4 SSO core
+1. Follow [principal-derivation-and-dpu-agent-policy-plan.md](/Users/danielsava/work/file-parser/principal-derivation-and-dpu-agent-policy-plan.md) to remove manifest `identity` and legacy `capabilities`.
+2. Move agent secret-role ceilings fully into DPU-owned `agentPolicies`.
+3. Add stronger browser-level negative tests for replay, tampering, and forged delegated headers, especially around the router’s delegated `tools/call` admission path.
+4. If clustering ever becomes a requirement, replace in-process replay caches with shared state before claiming replay protection across replicas.
+5. Keep `testExplorer` as the main live validation target for Git/DPU and `testCoral` as the main live validation target for SSO.
 
-- `ploinky/cli/server/auth/genericAuthBridge.js`
-- `ploinky/cli/server/auth/service.js`
-- `ploinky/cli/server/authHandlers.js`
-- `ploinky/cli/commands/ssoCommands.js`
-- `ploinky/cli/services/sso.js`
-
-Questions it answers:
-
-- which provider is bound to `workspace:sso`
-- where browser pending state is stored
-- why login/callback/logout/token refresh succeeds or fails
-
-### 12.5 Keycloak provider runtime
-
-- `basic/keycloak/runtime/index.mjs`
-
-Questions it answers:
-
-- OIDC discovery
-- PKCE and nonce handling
-- token exchange
-- JWT verification
-- role extraction and normalized user mapping
-
-### 12.6 Git token storage and retrieval
-
-- `AssistOSExplorer/gitAgent/lib/github-auth.mjs`
-- `AssistOSExplorer/gitAgent/lib/secret-store-client.mjs`
-- `AssistOSExplorer/gitAgent/tools/git_tool.mjs`
-- `AssistOSExplorer/dpuAgent/tools/dpu_tool.mjs`
-- `AssistOSExplorer/dpuAgent/lib/dpu-store.mjs`
-- `AssistOSExplorer/dpuAgent/lib/dpu-store-internal/storage.mjs`
-
-Questions it answers:
-
-- where GitHub metadata is stored
-- where the actual token is stored
-- why a `secret_get` or `secret_put` failed
-- whether failure is in gitAgent, router, or DPU
-
-### 12.7 Explorer Git modal/UI
-
-- `AssistOSExplorer/explorer/utils/ide-plugins.mjs`
-- `AssistOSExplorer/gitAgent/IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal.js`
-- `AssistOSExplorer/gitAgent/IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal-utils.js`
-
-Questions it answers:
-
-- why the Git plugin button does not appear
-- why repos do not load in the modal
-- why GitHub identity does not prefill
-
-## 13. Useful Local Artifacts During Debugging
-
-These artifacts are useful when debugging the live system:
-
-- root architecture docs:
-  - `current-architecture-login-secret-flows.md`
-  - `ploinky-capability-wire-sso-refactor-plan.md`
-- Explorer GitHub state:
-  - `/Users/danielsava/work/testExplorer/.ploinky/state/git-agent-github-auth.json`
-- workspace routing state:
-  - `<workspace>/.ploinky/routing.json`
-- router/watchdog logs:
-  - `<workspace>/.ploinky/logs/router.log`
-  - `<workspace>/.ploinky/logs/watchdog.log`
-
-## 14. Recommended Next Steps for a New Session
-
-If continuing feature work, the best next tasks are:
-
-1. remove the last DPU-specific grant-policy dependency from `gitAgent.manifest.json`
-2. delete the legacy auth compatibility path under strict secure-wire rollout
-3. add end-to-end replay/forgery/scope denial integration tests
-4. add hot-reload or runtime refresh for provider binding allowlists if operationally needed
-5. broaden browser-driven tests for GitHub auth and downstream git operations using the stored token
-
-## 15. Short Summary
-
-The implementation achieved the main architectural shift:
-
-- Ploinky core is now capability-driven and provider-neutral for SSO
-- the wire is router-mediated and signed
-- `gitAgent` uses a generic `secret-store/v1` client instead of a DPU-specific client
-- `dpuAgent` serves that contract and enforces both scope and binding constraints
-- `basic/keycloak` now owns the provider-specific SSO logic
-- CoralFlow and AssistOSExplorer were deployed and used to validate the changes from the browser
-
-The main remaining work is cleanup and hardening, not establishing the architecture itself.
+This document reflects the current branch plus the latest uncommitted hardening changes in the working tree.
