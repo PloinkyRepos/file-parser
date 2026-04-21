@@ -15,6 +15,8 @@ When this document conflicts with earlier capability-heavy assumptions, the simp
 
 Related documents:
 
+- [explorer-router-gitagent-dpu-architecture.md](/Users/danielsava/work/file-parser/explorer-router-gitagent-dpu-architecture.md)
+- [gitagent-dpuagent-auth-flow.md](/Users/danielsava/work/file-parser/gitagent-dpuagent-auth-flow.md)
 - [dpu-authority-simplified-architecture-plan.md](/Users/danielsava/work/file-parser/dpu-authority-simplified-architecture-plan.md)
 - [dpu-authority-simplified-implementation-plan.md](/Users/danielsava/work/file-parser/dpu-authority-simplified-implementation-plan.md)
 - [principal-derivation-and-dpu-agent-policy-plan.md](/Users/danielsava/work/file-parser/principal-derivation-and-dpu-agent-policy-plan.md)

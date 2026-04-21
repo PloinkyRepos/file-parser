@@ -13,6 +13,8 @@ Important:
 - this document describes the current committed implementation
 - it does not define the final target architecture after the later clarification that `gitAgent` may be explicitly coupled to `dpuAgent`
 - the revised target architecture is documented in [dpu-authority-simplified-architecture-plan.md](/Users/danielsava/work/file-parser/dpu-authority-simplified-architecture-plan.md)
+- the focused Git/DPU identity and auth flow is documented in [gitagent-dpuagent-auth-flow.md](/Users/danielsava/work/file-parser/gitagent-dpuagent-auth-flow.md)
+- the browser/router/agent routing architecture is documented in [explorer-router-gitagent-dpu-architecture.md](/Users/danielsava/work/file-parser/explorer-router-gitagent-dpu-architecture.md)
 
 ## 1. Runtime Architecture
 
