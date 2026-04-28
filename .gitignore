@@ -4,3 +4,7 @@ package-lock.json
 .ploinky
 .history
 CLAUDE.md
+# >>> ploinky default-skills >>>
+.claude/skills/
+.agents/skills/
+# <<< ploinky default-skills <<<
