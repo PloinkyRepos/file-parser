@@ -20,6 +20,22 @@
 
 ## Recent work (most recent first)
 
+### 2026-05-04 - Skills Explorer workflow split and deploy simplification
+
+Simplified `AssistOSExplorer/.github/workflows/deploy-skills-explorer.yml` so it no longer provisions OS packages, configures persistent PATH, accepts `ploinky_branch`, accepts `update_ploinky`, forwards direct provider/model variables (`OPENAI_*`, `OPENROUTER_*`, `LLM_MODELS`, etc.), or manually rewrites `.ploinky/agents.json` / `.ploinky/enabled_repos.json`. Deploy now assumes the host has already been provisioned, resolves the installed `ploinky` binary, stops the current workspace, ensures the `fileExplorer` and `webmeetInfra` repos are added/enabled through Ploinky commands, runs `ploinky update` to update Ploinky/workspace repos/`achillesAgentLib`, pins the requested Explorer branch with git, sets runtime vars through `ploinky var`, and starts `fileExplorer/explorer`.
+
+Removed direct provider/model plumbing from the affected agents and docs. `gitAgent`, `llmAssistant`, and `webmeetAgent` manifests/start scripts no longer declare or fallback-export OpenAI/Anthropic/Gemini/Mistral/DeepSeek/OpenRouter/HuggingFace/XAI/Axiologic/OpenCode provider keys; LLM access should go through `SOUL_GATEWAY_API_KEY` and optional `SOUL_GATEWAY_BASE_URL`.
+
+Deleted obsolete GitHub Actions configuration from `PloinkyRepos/AssistOSExplorer`: secrets `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `AXIOLOGIC_API_KEY`, `OPENAI_OPENCODE_KEY`; variables `OPENAI_AXIOLOGIC_KIRO_URL`, `OPENAI_AXIOLOGIC_KIRO_KEY_ENV`, `ANTHROPIC_AXIOLOGIC_ANTIGRAVITY_URL`, `ANTHROPIC_AXIOLOGIC_ANTIGRAVITY_KEY_ENV`, `OPENAI_OPENCODE_URL`, `OPENAI_OPENAI_RESPONSES_URL`, `OPENAI_OPENAI_RESPONSES_KEY_ENV`, and `LLM_MODELS`. Kept `PLOINKY_MASTER_KEY`, `SOUL_GATEWAY_API_KEY`, SSH, OnlyOffice, Explorer workspace/router/public URL variables.
+
+Configured the GitHub repo for the `skills.axiologic.dev` production profile: `PLOINKY_PROFILE=prod`, `WEBMEET_PUBLIC_LIVEKIT_URL=wss://livekit.skills.axiologic.dev`, internal LiveKit/Egress URLs, `WEBMEET_LIVEKIT_USE_EXTERNAL_IP=true`, node/TURN external IP `193.180.209.191`, TURN realm/user, TURN UDP relay range `20000-20010`, plus generated `WEBMEET_LIVEKIT_API_SECRET` and `WEBMEET_TURN_PASSWORD` secrets.
+
+Added `AssistOSExplorer/.github/workflows/provision-skills-explorer-host.yml` for one-time host setup: OS packages, Podman, Node.js, `loginctl enable-linger`, initial Ploinky clone, `npm install --ignore-scripts`, `achillesAgentLib` clone/update, `~/.local/bin` symlinks, and `.bashrc` PATH setup. Use provision only when bootstrapping or repairing the remote host. For a fresh app deployment, run `Destroy Explorer (Remote Wipe)` first, then `Deploy Skills Explorer`; deploy itself is the update path.
+
+### 2026-05-04 - WebMeet infrastructure architecture document
+
+Created `AssistOSExplorer/docs/webmeet-infra-architecture.md`, a detailed architecture note for the current Explorer WebMeet flow. It maps Ploinky startup/routing, the Explorer plugin discovery path, `webmeetAgent` MCP/API/worker internals, every `webmeetInfra` agent (`stack`, Redis, Coturn, LiveKit server, LiveKit egress), storage/encryption, auth/secure-wire behavior, public deployment considerations, and Mermaid diagrams for the dependency graph, runtime topology, plugin discovery, join flow, chat/AI flow, recording flow, and invocation auth flow.
+
 ### 2026-04-30 — GitHub device auth `fetch failed` root cause, fix, push, and fresh remote redeploy
 
 **Symptom:** on `https://skills.axiologic.dev`, the GitHub device authentication flow reached the point where GitHub authorization succeeded, then the app surfaced `TypeError: fetch failed` while the `gitAgent` tried to call another agent through the router. Remote inspection showed `gitAgent` had `PLOINKY_ROUTER_URL=http://host.containers.internal:8080`, but the skills deployment router listens on port `8097`.
@@ -35,7 +51,7 @@
 **Verification:** full Ploinky unit suite passed (`239` tests). Pushed both commits. Ran a scratch remote redeploy through GitHub Actions only:
 1. `Destroy Explorer (Remote Wipe)` run `25168964136` — success.
 2. Post-destroy `Remote Skills Status` run `25169011359` — success; workspace removed and port `8097` closed.
-3. `Deploy Skills Explorer` run `25169068642` with `branch=main`, `ploinky_branch=master`, `workspace_name=explorerWorkspace`, `router_port=8097`, `public_url=https://skills.axiologic.dev` — success.
+3. `Deploy Skills Explorer` run `25169068642` with `branch=main`, `workspace_name=explorerWorkspace`, `router_port=8097`, `public_url=https://skills.axiologic.dev` — success.
 4. Post-deploy `Remote Skills Status` run `25169266941` — success; all 16 Explorer/WebMeet containers up, router listening on `*:8097`.
 5. Read-only remote spot-checks: deployed heads are `ploinky=afdd1c5` and `fileExplorer=ed86b78`; every Explorer/WebMeet container reports `PLOINKY_ROUTER_URL=http://host.containers.internal:8097`; the `gitAgent` probe to `${PLOINKY_ROUTER_URL}/mcps/dpuAgent/mcp` returns `status=401` instead of `fetch failed`; public `curl -I https://skills.axiologic.dev/dashboard` returns `HTTP/2 401` via Cloudflare, which confirms the public tunnel reaches the router.
 
@@ -208,9 +224,10 @@ After the sandbox-default flip, every agent runs in podman by default. To opt ba
 
 | File | Workflow `name:` | Purpose |
 |---|---|---|
-| `deploy-skills-explorer.yml` | `Deploy Skills Explorer` | Deploys to `skills.axiologic.dev`. Inputs: `branch`, `ploinky_branch`, `workspace_name`, `router_port`, `public_url`. |
+| `provision-skills-explorer-host.yml` | `Provision Skills Explorer Host` | One-time/rare host provisioning: OS packages, Podman, Node.js, initial Ploinky install, `achillesAgentLib`, PATH symlinks. Run before first deploy or when the host prerequisites drift. |
+| `deploy-skills-explorer.yml` | `Deploy Skills Explorer` | Deploy/update path for `skills.axiologic.dev`. Inputs: `branch`, `workspace_name`, `router_port`, `public_url`, `profile`. Assumes provisioned host, runs `ploinky update`, uses Ploinky commands for repo/agent state, and does not hand-edit `.ploinky/*.json`. |
 | `deploy-explorer.yml` | `Deploy Explorer (Fresh Install)` | Generic fresh-install variant (without the skills.axiologic.dev branding). |
-| `update-explorer.yml` | `Update Explorer` | **DEPRECATED — has a bug.** Was supposed to update an existing remote deployment without a destroy. Its "Restart services" step opens a fresh SSH bash with no `PLOINKY_MASTER_KEY` in the env, then runs `ploinky stop` + `ploinky start`; every agent fails decryption (`Unable to decrypt .ploinky/.secrets: PLOINKY_MASTER_KEY is required`). Confirmed broken on 2026-04-30 (run 25163272435). **Use `Deploy Skills Explorer` for both fresh deploys and updates** — it preserves `.ploinky/.secrets`, `~/.env`, and persisted agent `data/` while resetting containers + agent registry. Slightly slower than a true update would be, but reliable. |
+| `update-explorer.yml` | `Update Explorer` | **DEPRECATED — has a bug.** Was supposed to update an existing remote deployment without a destroy. Its "Restart services" step opens a fresh SSH bash with no `PLOINKY_MASTER_KEY` in the env, then runs `ploinky stop` + `ploinky start`; every agent fails decryption (`Unable to decrypt .ploinky/.secrets: PLOINKY_MASTER_KEY is required`). Confirmed broken on 2026-04-30 (run 25163272435). **Use `Deploy Skills Explorer` for updates.** For a fresh deployment, run `Destroy Explorer (Remote Wipe)` first, then deploy. |
 | `destroy-explorer.yml` | `Destroy Explorer (Remote Wipe)` | Stops/removes all `_<workspace>_` containers, OnlyOffice container, and (by default) `rm -rf`'s the workspace dir. |
 | `remote-skills-status.yml` | `Remote Skills Status` | Read-only diagnostic: git status of repos, `ploinky status`, `podman ps`, log tail, HTTP checks. Use this to confirm a deploy succeeded. |
 
@@ -229,16 +246,10 @@ gh workflow run "Destroy Explorer (Remote Wipe)" \
 gh run list -R PloinkyRepos/AssistOSExplorer --workflow "Destroy Explorer (Remote Wipe)" --limit 1
 gh run watch <run-id> -R PloinkyRepos/AssistOSExplorer
 
-# 3. Fresh deploy.
-#    NOTE: ploinky_branch must be a BRANCH NAME, not a SHA — the deploy script
-#    runs `git checkout origin/$PLOINKY_BRANCH` which fails on raw SHAs
-#    (fatal: ambiguous argument 'origin/<sha>': unknown revision). To pin
-#    to a specific commit, push it as a branch first:
-#       cd ploinky && git push origin <sha>:refs/heads/<branch-name>
+# 3. Fresh deploy. The host must already be provisioned.
 gh workflow run "Deploy Skills Explorer" \
   -R PloinkyRepos/AssistOSExplorer \
   -f branch=main \
-  -f ploinky_branch=master \
   -f workspace_name=explorerWorkspace \
   -f router_port=8097 \
   -f public_url=https://skills.axiologic.dev
@@ -269,15 +280,15 @@ The user requires a status check after each action. Two complementary ways:
    # Inspect host-process env (Watchdog / RoutingServer) — useful to confirm
    # SOUL_GATEWAY_API_KEY etc. propagated from gh secrets through buildRouterEnv:
    ssh -i ~/demo_private_key.pem admin@193.180.209.191 \
-     'pid=$(pgrep -f Watchdog.js | head -1); sudo tr "\0" "\n" </proc/$pid/environ | grep -E "^(SOUL_GATEWAY|OPENAI|AXIOLOGIC|PLOINKY_MASTER_KEY|ASSISTOS_FS_ROOT)" | sed "s/=.*/=<set>/"'
+     'pid=$(pgrep -f Watchdog.js | head -1); sudo tr "\0" "\n" </proc/$pid/environ | grep -E "^(SOUL_GATEWAY|PLOINKY_MASTER_KEY|ASSISTOS_FS_ROOT)" | sed "s/=.*/=<set>/"'
    ```
    Stay strictly read-only. No `ploinky start`, no `podman rm`, no file edits over SSH. When grepping env vars from `/proc/<pid>/environ`, use prefix patterns like `^SOUL_GATEWAY` (not exact-name `^SOUL_GATEWAY=`) since the actual variables are `SOUL_GATEWAY_API_KEY`, `SOUL_GATEWAY_BASE_URL`, etc.
 
 ### Resolved: routerSettings.js incident (2026-04-30)
 
-Commit `da7bdbf` on `OutfinityResearch/ploinky:master` ("Update admin UI and settings functionality") added an import for `readRouterSettings`/`updateRouterSettings` from `../services/routerSettings.js` into `cli/server/authHandlers.js` but did not include the `routerSettings.js` file. The remote router crash-looped with `ERR_MODULE_NOT_FOUND`, the Watchdog circuit-breaker tripped, and `Deploy Skills Explorer` runs timed out after 13 minutes at "Waiting for local router...". Workaround at the time was to pin `ploinky_branch` to a temporary branch `deploy-stable` pointing at `afb4918`.
+Commit `da7bdbf` on `OutfinityResearch/ploinky:master` ("Update admin UI and settings functionality") added an import for `readRouterSettings`/`updateRouterSettings` from `../services/routerSettings.js` into `cli/server/authHandlers.js` but did not include the `routerSettings.js` file. The remote router crash-looped with `ERR_MODULE_NOT_FOUND`, the Watchdog circuit-breaker tripped, and `Deploy Skills Explorer` runs timed out after 13 minutes at "Waiting for local router...". Workaround at the time was to pin Ploinky to a temporary branch `deploy-stable` pointing at `afb4918`.
 
-**Resolved** in commit `d59622f` ("Add missing cli/services/routerSettings.js") on master. The temporary `deploy-stable` branch was deleted via `git push origin --delete deploy-stable`. `ploinky_branch=master` is now safe again. Kept this note as a record of the failure mode in case a similar import-without-file ever lands again — the symptom is `ERR_MODULE_NOT_FOUND` in `~/explorerWorkspace/.ploinky/logs/router.log` looping until the Watchdog gives up.
+**Resolved** in commit `d59622f` ("Add missing cli/services/routerSettings.js") on master. The temporary `deploy-stable` branch was deleted via `git push origin --delete deploy-stable`. The skills deploy workflow no longer accepts a Ploinky branch input; it uses the provisioned Ploinky install and `ploinky update`. Kept this note as a record of the failure mode in case a similar import-without-file ever lands again — the symptom is `ERR_MODULE_NOT_FOUND` in `~/explorerWorkspace/.ploinky/logs/router.log` looping until the Watchdog gives up.
 
 ### Repo naming caveat on the remote
 
