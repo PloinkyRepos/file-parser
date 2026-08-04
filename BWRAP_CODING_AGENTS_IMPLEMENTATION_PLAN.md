@@ -608,7 +608,9 @@ Completed actions in `file-parser` (status report, not intent):
 | `092db1c` "Document Bubblewrap coding-agent migration" | exactly two files — `BWRAP_CODING_AGENTS_ARCHITECTURE.md` (833 lines) and `BWRAP_CODING_AGENTS_IMPLEMENTATION_PLAN.md` (613 lines) | `git show --stat 092db1c` confirms two files, 1446 insertions, and **no** QA/Playwright/evidence artifacts. |
 | follow-up verification commit | this file only, adding §27 and the inline corrections to §3.1, §3.2, and §19.2 | Committed with an explicit pathspec (`git commit <path> -m …`, which implies `--only`) so the ~7,900 pre-existing staged artifact entries stay in the index, uncommitted, exactly as found. |
 
-Both commits are path-scoped to the two migration documents. The pre-existing staged artifact set was never added, removed, reset, or stashed. `ploinky-proxy` did not exist on `origin` at snapshot (`git ls-remote origin` returned only `main`, `ploinky-box`, `ploinky-box-v2`, `profile_implementation`, and two `feature/*` refs), so the push creates that branch and sets upstream. No force-push was used in any repository.
+Both commits are path-scoped to the two migration documents. The pre-existing staged artifact set was never added, removed, reset, or stashed; `git status --porcelain` still reports 7,934 entries, unchanged.
+
+Push outcome: `ploinky-proxy` did not exist on `origin` at the initial snapshot (`git ls-remote origin` then returned only `main`, `ploinky-box`, `ploinky-box-v2`, `profile_implementation`, and two `feature/*` refs), but it was created remotely by the session that authored `092db1c`. The verification push was therefore a **fast-forward** update, `092db1c..829ec55`, which also set the local upstream to `origin/ploinky-proxy`. `origin/ploinky-proxy` is now `829ec55`. The remote reports that `PloinkyRepos/file-parser` has moved to `AssistOS-AI/file-parser`; the configured remote accepted the push and was deliberately **not** rewritten. No force-push was used in any repository.
 
 Inspected, baseline-unchanged repositories:
 
