@@ -66,6 +66,8 @@ The highest-risk work is not the bwrap argument list. It is generation-bound Age
 | `ploinky/cli/utils/runtime/sandboxRuntime.js` | **Observed:** `/etc/ploinky-box` forces host sandbox disabled, rejects enabling it with `PLOINKY_BOX_SANDBOX_FORCED`, and reports Podman as effective. |
 | `ploinky/cli/sandbox/docker/common.js:getRuntimeForAgent` | **Observed:** the Box branch returns Podman before inspecting `lite-sandbox`; outside Box, a disabled sandbox redirects `lite-sandbox` to a container, while enabled Linux/macOS selects bwrap/seatbelt. Missing bwrap fails, and a bwrap startup error has no implicit fallback. |
 | `ploinky/tests/unit/sandboxRuntime.test.mjs` | **Observed:** tests currently encode forced Podman in Box and host-disable fallback outside it. |
+| `container-image-builds/images/ploinky-box/Dockerfile:74` | **Observed:** the Box image additionally bakes `PLOINKY_DISABLE_HOST_SANDBOX=1` into `ENV`. `isHostSandboxDisabled()` (`sandboxRuntime.js:45-51`) checks that variable *before* the workspace config, so Podman is forced in the Box by **three** independent mechanisms — the `getRuntimeForAgent` marker short-circuit, this image env var, and the marker-driven `isForcedBoxSandboxPolicy()`. Phase 3 is not effective unless all three change together, and `container-image-builds/tests/image-definitions.test.mjs:448,472` pins both the marker line and this env var. |
+| `ploinky/ploinky-box/lib/boxMarker.mjs:27-41` vs `sandboxRuntime.js:74-80` | **Observed:** two different Box detectors sit on the same decision path. `isInsideBox` (used by `getRuntimeForAgent`) rejects symlinks, requires `nlink === 1`, validates exact marker bytes, and **throws** on a malformed marker; `isForcedBoxSandboxPolicy` follows symlinks, ignores content, and swallows errors. They disagree on a corrupt/symlinked marker. Reconcile them in phase 3 rather than adding a third detector. |
 
 ### 3.2 Generic Ploinky bwrap service
 
@@ -77,7 +79,7 @@ The highest-risk work is not the bwrap argument list. It is generation-bound Age
 | Launch/readiness | `startBwrapProcess` writes `.ploinky/logs/<agent>-bwrap.log`, spawns a detached bwrap, checks only immediate survival, records ownership, and then higher layers perform manifest TCP/MCP/script readiness. |
 | Ownership | `bwrapFleet.js` stores schema-v2 PID plus process-start identity under `.ploinky/bwrap-pids` and uses generation-bound TERM-to-KILL cleanup with PID-reuse protection. |
 | Interactive | `attachBwrapInteractive` creates a new bwrap process with `--die-with-parent`. It ignores its `workdir` argument, uses the registered project path, and wraps with `script -qfec` only for a real TTY. |
-| Status defect candidate | `agentRuntimeState.js` queries bwrap ownership with `record.agentName`, while launch/cleanup use the generated runtime/container key. This must be fixed or disproved by tests. |
+| Status defect (**confirmed**) | **Observed:** the key mismatch is real, not a candidate. `startBwrapProcess` writes the PID record under the container key — `saveBwrapPid(containerName, child.pid, runtimeIdentity)` (`bwrapServiceManager.js:824`), where `containerName = options.containerName \|\| getAgentContainerName(agentName, repoName)` (`:653`) — and `ensureBwrapService`/`stopBwrapProcess` use that same key (`:914`, `:984`, `:1006`). But `agentRuntimeState.js:51-52` looks the record up with the bare agent name: `sandboxRunning(record.agentName)` / `sandboxPid(record.agentName)`. A running bwrap service is therefore reported stopped with PID 0 in status. Fix in phase 4 and add a regression test to `agentRuntimeState.test.mjs`; this is a prerequisite for the §25 observability gate, because a "no coding container" proof is worthless if the bwrap service is invisible to status. |
 
 ### 3.3 CLI and manual lifecycle
 
@@ -449,7 +451,7 @@ Status must label `runtime=bwrap`, role (`service` or `provider-task`), effectiv
 
 | Files/modules | Current responsibility | Change | Tests/gate |
 | --- | --- | --- | --- |
-| `images/ploinky-box/Dockerfile` | Pinned Podman base, Node/npm, Box tools. | Install pinned distro Bubblewrap and only proven toolchain packages; retain rootless/non-privileged user and Node ABI. | `tests/image-definitions.test.mjs`. |
+| `images/ploinky-box/Dockerfile` | Pinned Podman base (`quay.io/podman/stable` digest, Podman 5.8.2); Node 24 + npm/npx copied to `/usr/local`; cloudflared; `dnf install git iproute libcap fuse-overlayfs netavark aardvark-dns passt slirp4netns util-linux-core` (line 19). | Install pinned distro Bubblewrap and only proven toolchain packages; retain rootless/non-privileged user and Node ABI. **Also remove `PLOINKY_DISABLE_HOST_SANDBOX=1` from the `ENV` block (line 74)** — leaving it makes the phase-3 selector a no-op inside the Box. **Concrete toolchain delta to close:** coding agents currently inherit `bash bubblewrap ca-certificates curl ffmpeg git g++ make openssh-client python3` from `assistos/ploinky-node:24-bookworm-tools` (`images/ploinky-node/Dockerfile:6-18`); the Box today has only `git` from that list (Fedora-base provision of `curl`/`ca-certificates` is **unverified — check the base image before sizing the delta**). Add what a representative provider task actually needs, proven by the phase-2 native smoke, not by assumption. | `tests/image-definitions.test.mjs` (update the line-472 env assertion in the same change). |
 | `.github/workflows/publish-ploinky-box-image.yml` | Native digest build/merge without behavioral gates. | Add per-arch pre-promotion native bwrap capability/policy/provider smoke; upload diagnostics; merge/promote only after gates. | Workflow structural assertions plus live amd64/arm64 run. |
 | New `tests/native/ploinky-box-bwrap.mjs` or source-owned smoke script copied into image | No Box-native bwrap test. | Prove nested user/mount/PID/IPC/UTS, private proc, RO/RW overlays, clearenv, Node/npm, signals, no privilege/engine access. | Mandatory on Linux amd64/arm64 and Podman Machine lane. |
 
@@ -591,13 +593,22 @@ Snapshot taken 2026-08-04 before creating this plan. All definite source reposit
 
 | Repository | Branch / upstream | Origin | HEAD at snapshot | Worktree disposition |
 | --- | --- | --- | --- | --- |
-| `file-parser` | `ploinky-proxy` / none | `https://github.com/PloinkyRepos/file-parser.git` | `c4bf79fb37b20346cc3e78619b70a6fe2cb3d78b` | Very large unrelated staged/modified QA, Playwright, evidence, and document set preserved untouched. Architecture was `AM`; this plan is committed with the architecture by an exact path-only commit, then the branch is pushed/set upstream. The final response records the self-referential commit hash. |
+| `file-parser` | `ploinky-proxy` / none at snapshot | `https://github.com/PloinkyRepos/file-parser.git` | `c4bf79fb37b20346cc3e78619b70a6fe2cb3d78b` at snapshot | Very large unrelated staged/modified QA, Playwright, evidence, and document set preserved untouched — see the completed-actions note below. |
 | `ploinky` | `ploinky-proxy` / `origin/ploinky-proxy` | `https://github.com/assistos-ai/ploinky` | `25e4c66153612ca75112345dfadf8ae443943c6e` | Clean. |
 | `AchillesCLI` | `ploinky-proxy` / `origin/ploinky-proxy` | `https://github.com/OutfinityResearch/AchillesCLI.git` | `1fe668f733256fd429444a07224ed25e65e40ce7` | Related tracked bwrap `/proc` and readiness work reviewed; 42 tests passed; committed as `1fe668f Harden nested Bubblewrap proc fallback` and pushed. Six unrelated untracked GPTResearcher `__pycache__` files remain untouched. GitHub reported the repository has moved; the configured remote accepted the push and was not rewritten. |
 | `container-image-builds` | `ploinky-proxy` / `origin/ploinky-proxy` | `https://github.com/AssistOS-AI/container-image-builds.git` | `18867613004527d188c56281e82dd1a8a1f9900e` | Clean. |
 | `AssistOSExplorer` | `ploinky-proxy` / `origin/ploinky-proxy` | `https://github.com/PloinkyRepos/AssistOSExplorer.git` | `a780fe098de4e199f3772d5b149324aa9dd9278d` | Clean. |
 | `copilot-agents` | `ploinky-proxy` / `origin/ploinky-proxy` | `https://github.com/AssistOS-AI/copilot-agents.git` | `e6837b01b97066d1a08567292ae30ff780372659` | Clean. |
 | `UmamiAgent` | `ploinky-proxy` / `origin/ploinky-proxy` | `https://github.com/AssistOS-AI/UmamiAgent.git` | `4f136fba997f4748efe1ef396c2f35f1f0452a82` | Clean. |
+
+Completed actions in `file-parser` (status report, not intent):
+
+| Commit | Contents | Verification |
+| --- | --- | --- |
+| `092db1c` "Document Bubblewrap coding-agent migration" | exactly two files — `BWRAP_CODING_AGENTS_ARCHITECTURE.md` (833 lines) and `BWRAP_CODING_AGENTS_IMPLEMENTATION_PLAN.md` (613 lines) | `git show --stat 092db1c` confirms two files, 1446 insertions, and **no** QA/Playwright/evidence artifacts. |
+| follow-up verification commit | this file only, adding §27 and the inline corrections to §3.1, §3.2, and §19.2 | Committed with an explicit pathspec (`git commit <path> -m …`, which implies `--only`) so the ~7,900 pre-existing staged artifact entries stay in the index, uncommitted, exactly as found. |
+
+Both commits are path-scoped to the two migration documents. The pre-existing staged artifact set was never added, removed, reset, or stashed. `ploinky-proxy` did not exist on `origin` at snapshot (`git ls-remote origin` returned only `main`, `ploinky-box`, `ploinky-box-v2`, `profile_implementation`, and two `feature/*` refs), so the push creates that branch and sets upstream. No force-push was used in any repository.
 
 Inspected, baseline-unchanged repositories:
 
@@ -611,3 +622,62 @@ Inspected, baseline-unchanged repositories:
 Managed runtime copies are deliberately not branch-normalized or committed as source: `.ploinky/repos/AchillesCLI` is `master` at `dd82c35d354cd10988ebf5e36c50712f481a558f`; `AchillesIDE`, `basic`, and `copilot-agents` shadows are on their managed main branches and differ from primaries. Phase 10 replaces/reconciles them through the normal managed-repository refresh from exact approved `ploinky-proxy` commits. Editing those generated/runtime checkouts directly would violate the preservation and generated-state rules.
 
 No migration implementation was written during this planning task.
+
+## 27. Independent verification addendum (2026-08-04)
+
+A second, independent read-only verification pass re-derived the current-state claims of sections 3 and 4 from source. It **confirmed** the plan's architecture, phase order, and gap matrix. The corrections already applied inline above are: the third Podman-forcing mechanism and the divergent Box-marker detectors (§3.1), the confirmed `agentRuntimeState.js` key mismatch (§3.2), and the concrete Box image toolchain delta plus the `ENV` removal (§19.2). This section records the remaining verified facts that change implementation work, so a later session does not re-derive them.
+
+### 27.1 Selector inventory — verified counts
+
+A complete sweep of all 56 `manifest.json` files (excluding `.ploinky/`, `node_modules/`, `.git/`) found **17** files with `lite-sandbox: true`: the 16 production manifests §14 enumerates, plus `ploinky/tests/testAgent/manifest.json`. No manifest sets it `false`. `startup: "manual"` appears in exactly **5** manifests: the three coding agents, `AchillesCLI/GPTResearcher`, and `proxies/searchAgent`. Two further observations worth acting on during phase 1:
+
+| Observation | Implication |
+| --- | --- |
+| Nothing in the resolver cross-checks `lite-sandbox` against `container`. `getRuntimeForAgent`'s only manifest read is `manifest?.['lite-sandbox'] === true`. | The CI allowlist of §23 is the *only* thing that will catch a specialized-image agent re-acquiring the flag. Make it a hard gate, not a warning. |
+| `AssistOSExplorer/webmeetAgent` is a generic-node agent that does **not** set the flag, while six sibling generic-node agents do. | The flag's current distribution is inconsistent rather than intentional. This supports removing all 13 rather than trying to preserve intent. |
+
+### 27.2 Every `lite-sandbox` flag is currently inert
+
+Because the host sandbox is disabled by default outside the Box (`sandboxRuntime.js:19-25`, `disableHostRuntimes: sandbox.disableHostRuntimes !== false`) and forced disabled inside it, **no agent in this workspace currently runs under bwrap or seatbelt**. The 17 flags express declared intent only. Two consequences for planning:
+
+1. Phase 1's manifest cleanup cannot regress runtime behavior — it removes flags that select nothing today. It is a low-risk change whose value is making phase 3's strict semantics safe.
+2. Any local validation performed on macOS exercises the **seatbelt** branch (`common.js:765-772`), never bwrap. The bwrap path requires a Linux host or the Box. Do not accept a macOS run as evidence for a bwrap gate.
+
+### 27.3 Provider sandbox — current mount reality
+
+The plan's §7.3 target is correct, but the delta from today is larger than "add masks". **Observed:** the committed task sandbox (`task-sandbox.mjs:449-509`, byte-identical between `opencodeAgent` and `piAgent`) mounts the system tree, `/opt/ploinky-node`, caller-supplied RO/RW paths, and the resolved project directory — **it never mounts `/workspace` at all**. It validates `projectDir` against `PLOINKY_WORKSPACE_ROOT` but does not expose the workspace. Therefore:
+
+| Target property | Current state | Work implied |
+| --- | --- | --- |
+| workspace RO | not mounted | **new mount**, not a mode change |
+| sibling projects readable | not visible | this is a *widening* of provider visibility — §24's "readable siblings" decision therefore grants access that does not exist today, rather than preserving it. Weigh accordingly. |
+| control-plane masks | unnecessary today (nothing to mask) | become load-bearing the moment `/workspace` is mounted |
+| `/workspace` as WORKDIR | **accepted today** — `inspectProjectPath` permits `relative === ''` (`task-sandbox.mjs:364-371`) | §24's root decision must actively *restrict* current behavior |
+
+Also verified: the RW binds are emitted before `--remount-ro /` (`:490-499`). bwrap applies options in order, so acceptance tests must assert the effective writability matrix by attempting real writes, not by inspecting argv.
+
+### 27.4 Codex is the widest gap
+
+**Observed** (`codex-runner.mjs:186-194`): Codex is spawned directly with `cwd: projectDir` and the **entire unfiltered `process.env`** plus `HOME:'/root'`, with no bwrap wrapper, no `--clearenv`, no readiness script, and no scoped broker. Its managed-Soul mode passes the **raw** `PLOINKY_AGENT_API_KEY` to the provider via `--config model_providers.<p>.env_key=PLOINKY_AGENT_API_KEY` (`:142`) and sets `shell_environment_policy.ignore_default_excludes=false` (`:145`). OpenCode and PI, by contrast, expose only an ephemeral loopback `PLOINKY_TASK_BROKER_URL`/`_KEY` pair. Phase 7 is therefore not "parity work" — for Codex it is the introduction of the entire boundary, and it is the single change with the largest security delta in the migration. Sequence it with its own review, and keep `--sandbox workspace-write` as defense in depth per §5.
+
+### 27.5 Credential coupling that blocks phases 6-8
+
+**Observed:** the scoped Soul broker starts **only** when `PLOINKY_AGENT_API_KEY`, `PLOINKY_ROUTER_URL`, and `PLOINKY_ROUTER_REQUEST_AUTHORITY` all carry `PLOINKY_ENV_SOURCE_* = generated` provenance (`scoped-soul-broker.mjs:12-24`); otherwise `startScopedSoulBroker` returns `null`. The bwrap env builder injects none of those (`bwrapServiceManager.js:560-574`, pinned by `agentEnvInjection.test.mjs:52-61`). Independently, the launch skills throw without `PLOINKY_AGENT_SECRET` (`launch-opencode/src/index.mjs:13-15`).
+
+The practical consequence: **phase 5 (identity) is a hard blocker for phases 6, 7, and 8, for all three providers** — not merely for the authenticated MCP route. Without it a migrated AgentServer cannot mint the assertions the browser flow needs, and every provider silently loses managed model routing and falls back to whatever direct provider credentials happen to be in env. Do not attempt a "filesystem-only" partial rollout that skips phase 5.
+
+Two further verified facts for phase 5's design: `RuntimeRelay` is container-gated at three independent layers (`confinement.js:3-17` runtime allowlist + 64-hex id; inspect-label attestation at `:41-49`; `podman exec` at `RuntimeRelayManager.js:326-330`), and `edgeRoutePlan.js:118-121` independently gates agent-port plans on the same pair, returning `503 AGENT_RUNTIME_INACTIVE`. However, the agent **root** surface is a direct loopback dial that needs no relay (`routerHandlers.js:145-162`). A first rollout can therefore work on the root/`/mcp` surface alone; the agent-port convention (`/base-agent-additional-server/<agent>/<port>/`) can stay unsupported-by-policy for coding agents if none of them declares such a service — verify that before committing to the larger relay work.
+
+### 27.6 `/root` occurrences to migrate (§24 O6 scope)
+
+`HOME=/root` is not a single constant. **Observed** occurrences that a `/home/agent` migration must cover: `FIXED_TASK_ENV.HOME` and the `/root/.local/bin`,`/root/.opencode/bin` PATH entries (`task-sandbox.mjs:24-29`); explicit `HOME:'/root'` in `opencode-runner.mjs:54`, `codex-runner.mjs:191`, `piAgent/scripts/execute-task.mjs:258`, and both `check-task-sandbox.mjs`; `DEFAULT_*_HOME = '/root'` fallbacks in all three runners; continuation/session store roots under `/root/.ploinky/` (all three stores, each with a different record shape — OpenCode `sessionId`, PI `sessionId`+`sessionDir`, Codex `threadId`); and the ploinky-side bind `--bind homeDir /root` plus `env.HOME='/root'` (`bwrapServiceManager.js:423,557`). Manifest `cli` fields and both `readiness.sh` scripts already use `$HOME` and need no change. Continuation records persist **absolute** paths, so the migration needs a tolerant reader that accepts `/root/...` records and rewrites on next write — otherwise every in-flight task handle breaks at cutover.
+
+### 27.7 Verification performed
+
+| Check | Result |
+| --- | --- |
+| `node --test tests/taskSandbox.test.mjs` (AchillesCLI) | 18/18 pass |
+| `node --test opencodeAgent/test/openai-api.test.mjs` | 13/13 pass |
+| `node --test piAgent/test/execute-task.test.mjs` | 11/11 pass |
+| Citation spot-checks | `sandboxRuntime.js`, `docker/common.js`, `bwrapServiceManager.js`, `bwrapFleet.js`, `agentRuntimeState.js`, `execute.mjs`, `task-sandbox.mjs`, `codex-runner.mjs`, `confinement.js`, `edgeRoutePlan.js`, `agentEnvInjection.test.mjs`, `bwrapArgs.test.mjs`, both Dockerfiles, `image-definitions.test.mjs`, and all four coding manifests read directly |
+| Not verified | native nested-bwrap behavior in the production Box (no Linux host available in this session); effective `sandbox.disableHostRuntimes` value in `.ploinky/agents.json` (read-denied); Fedora base image contents for `curl`/`ca-certificates`/`openssh`; `.ploinky/repos` managed-checkout commit identities (read-denied — §26's managed-drift figures come from the original planning session and were not re-derived) |
