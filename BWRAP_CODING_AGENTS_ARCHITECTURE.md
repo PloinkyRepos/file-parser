@@ -1,6 +1,6 @@
-# Bubblewrap Architecture for Coding Agents in Ploinky Box
+# Dual-Runtime Architecture for Coding Agents in Ploinky Box
 
-Analysis date: 2026-08-04
+Analysis date: 2026-08-04; revised 2026-08-05
 
 Status: proposed target architecture; not yet implemented
 
@@ -10,8 +10,8 @@ Status: proposed target architecture; not yet implemented
 
 | Workload | Runtime inside `ploinky-box` |
 | --- | --- |
-| `opencodeAgent`, `codexAgent`, `piAgent`, and equivalent coding agents | Bubblewrap (`bwrap`) |
-| The provider process launched by a coding agent | nested `bwrap` |
+| `opencodeAgent`, `codexAgent`, `piAgent`, and equivalent coding agents | selector-controlled: Bubblewrap when `lite-sandbox: true`; nested Podman when false or missing |
+| The provider process launched by a coding agent | nested `bwrap` inside the selected AgentServer runtime |
 | Router, Box supervisor, watchdog, and Ploinky control plane | trusted Box processes |
 | Explorer and ordinary application agents | nested Podman unless migrated separately |
 | OnlyOffice, LiveKit, STT, WebTTY, Soul Gateway, local LLM, Umami, and other image-dependent services | nested Podman |
@@ -21,7 +21,8 @@ The target does not add a generic `runtime.isolation` object. It reuses the exis
 ```json
 {
   "startup": "manual",
-  "lite-sandbox": true
+  "lite-sandbox": true,
+  "container": "docker.io/assistos/ploinky-node:<approved-tag-or-digest>"
 }
 ```
 
@@ -29,9 +30,12 @@ Inside the Box, the contract is deliberately small:
 
 | Manifest state | Runtime decision |
 | --- | --- |
-| `lite-sandbox: true` | `bwrap` is mandatory |
-| missing or `lite-sandbox: false` | container runtime remains available |
-| `bwrap` unavailable or its capability probe fails | fail closed; never fall back silently to Podman |
+| `lite-sandbox: true` on Linux or inside Box | `bwrap` is mandatory |
+| `lite-sandbox: true` on macOS | Seatbelt is mandatory |
+| missing or `lite-sandbox: false` | Podman is mandatory |
+| selected backend is unavailable, fails admission, or fails to launch | fail closed; never switch to the other runtime |
+
+The selector applies to every agent. It is not tied to an agent-name allowlist. A manifest may keep a `container` declaration while `lite-sandbox` is true: sandbox mode ignores that dormant declaration, while false or missing selects it. This lets the same coding manifest run in either supported mode by changing only the selector. Image-dependent agents remain false or missing unless their complete sandbox compatibility has been proved.
 
 `startup` is independent from isolation. `startup: "manual"` prevents automatic revival during a general workspace start, but an explicit browser delegation or `ploinky cli <agent>` may still start the agent.
 
@@ -44,14 +48,16 @@ The target has two trust levels:
 
 The provider may be launched in any canonical directory below `/workspace`. Once launched, it can write only to that directory subtree and its own HOME. Other workspace content remains readable but not writable. Ploinky control-plane secrets and other agents' homes are hidden rather than merely mounted read-only.
 
-This nested model is intentional:
+The provider boundary is intentional in both outer modes:
 
 ```text
 ploinky-box
-├── bwrap: opencodeAgent AgentServer (trusted, workspace RW)
-│   └── bwrap: OpenCode task (workspace RO, WORKDIR RW, HOME RW)
-└── bwrap: interactive launcher
-    └── bwrap: OpenCode TUI (workspace RO, WORKDIR RW, HOME RW)
+├── lite-sandbox: true
+│   └── bwrap: opencodeAgent AgentServer (trusted, workspace RW)
+│       └── bwrap: OpenCode task or TUI (workspace RO, WORKDIR RW, HOME RW)
+└── lite-sandbox: false or missing
+    └── Podman: opencodeAgent AgentServer (existing container ABI)
+        └── bwrap: OpenCode task or TUI (same provider policy)
 ```
 
 OpenCode and PI already contain most of the task-local nested-bwrap mechanism. Codex must be brought under the same Ploinky boundary instead of relying only on its built-in `workspace-write` sandbox.
@@ -77,7 +83,7 @@ The terms below distinguish facts from design:
 | Target | required architecture described by this document |
 | Open | requires a product decision or native runtime test |
 
-Existing dirty worktrees must be preserved. Implementation changes across affected repositories belong on the `ploinky-proxy` branch. Relevant existing work should be committed and pushed in coherent commits; unrelated or ambiguous changes must not be silently mixed into the migration.
+Existing dirty worktrees must be preserved. Implementation changes across affected repositories belong on `ploinky-bwrap`, created from `ploinky-proxy`. `ploinky-proxy` remains the preserved baseline and receives no feature implementation. Relevant work is committed and pushed coherently on `ploinky-bwrap`; unrelated or ambiguous changes must not be silently mixed into the migration.
 
 ## 3. Current architecture
 
@@ -194,8 +200,8 @@ flowchart LR
 
 | Agent or service | Relevant current property | Initial target |
 | --- | --- | --- |
-| `explorer` | generic Node image, currently has `lite-sandbox`, manages repository access | remain Podman; remove or migrate misleading flag |
-| `gitAgent`, `dpuAgent`, `soplangAgent`, `tasksAgent`, `multimedia`, `webAssist` | mostly Node agents; several currently have `lite-sandbox` | remain Podman until evaluated separately |
+| `explorer` | generic Node image, currently has `lite-sandbox`, manages repository access | select Podman for this rollout; sandbox mode requires separate compatibility evidence |
+| `gitAgent`, `dpuAgent`, `soplangAgent`, `tasksAgent`, `multimedia`, `webAssist` | mostly Node agents; several currently have `lite-sandbox` | select Podman until evaluated separately |
 | `achilles-cli` | Copilot and orchestrator | remain Podman in the first coding-agent migration |
 | `webtty` | specialized image and complete workspace mount | remain Podman |
 | `liveKitServerAgent` | Redis, LiveKit, Egress, host networking, UDP 7882 | Podman required |
@@ -205,7 +211,7 @@ flowchart LR
 | `soul-gateway` | LLM gateway and persistent SQLite state | remain Podman |
 | `default-local-llm` | model/runtime image | Podman required |
 | `umamiAgent` | specialized PostgreSQL, Umami, and MCP image despite `lite-sandbox: true` | Podman required; remove the flag |
-| `opencodeAgent`, `piAgent`, `codexAgent` | manual startup, interactive CLI, asynchronous tasks, persistent state | migrate to bwrap |
+| `opencodeAgent`, `piAgent`, `codexAgent` | manual startup, interactive CLI, asynchronous tasks, persistent state | support both selected modes; initial sandbox-mode rollout uses bwrap |
 
 Coding agents are not automatic startup dependencies of `achilles-cli`. They are optional and start on demand. That behavior must remain unchanged.
 
@@ -240,7 +246,7 @@ The migration must not expose a Docker or Podman socket to coding sandboxes.
 
 Observed: the image does not currently install `bubblewrap`.
 
-Observed: the image is not identical to `assistos/ploinky-node:24-bookworm-tools`. Once coding agents stop using that container image as their root filesystem, all required provider tooling must either exist in the Box or be mounted as immutable runtime content.
+Observed: the image is not identical to `assistos/ploinky-node:24-bookworm-tools`. In sandbox mode, where that coding image is dormant, all required provider tooling must exist in the Box or be mounted as immutable runtime content. Container mode continues to use the declared coding image, which must also carry the compatible inner-bwrap launcher contract.
 
 ### 4.3 Required Box changes
 
@@ -326,9 +332,9 @@ The current generic sandbox mounts:
 
 The target reuses the lifecycle machinery but changes runtime selection, mount policy, HOME semantics, interactive execution, and Router credentials.
 
-### 6.2 Node.js inside bwrap
+### 6.2 Node.js in the selected service runtime
 
-Coding agents do not need an independent Node installation.
+Sandbox-selected coding agents do not need an independent Node installation. Container-selected coding agents continue to use the Node runtime pinned in their declared image.
 
 Observed current flow:
 
@@ -339,7 +345,7 @@ Observed current flow:
 5. Codex and PI installers can call npm through `/opt/ploinky-node/lib/node_modules/npm/bin/npm-cli.js`.
 6. Provider packages and mutable state are installed under the persistent agent HOME.
 
-The same mechanism remains the target ABI. bwrap only changes the visible mount tree and process environment; it does not copy or virtualize Node by itself.
+The same mechanism remains the sandbox-service ABI. In container mode the provider adapter discovers and read-only binds the image's pinned Node/provider runtime. Both service images must contain a compatible `bwrap` and the same fd-safe provider launcher ABI so the inner provider boundary is equivalent in either mode.
 
 ### 6.3 Current provider behavior
 
@@ -356,7 +362,7 @@ OpenCode currently writes configuration, cache, databases, and state below `.con
 | Gap | Impact |
 | --- | --- |
 | Box marker forces Podman | `lite-sandbox` cannot select bwrap in the Box |
-| coding manifests share `lite-sandbox` with unrelated agents | the flag inventory must be cleaned before its semantics become strict |
+| existing `lite-sandbox` values are not backed by a compatibility contract | classify every true manifest before strict universal selector semantics ship |
 | current global bwrap service mounts the configured workspace RW | correct for the trusted AgentServer, too broad for the provider process |
 | current interactive path executes `manifest.cli` directly | interactive providers bypass task-local policy |
 | current public CLI starts at `/workspace` | arbitrary launch-directory selection is incomplete |
@@ -374,22 +380,27 @@ flowchart TB
     subgraph BOX["Outer Podman container: ploinky-box"]
         CP["Trusted Ploinky control plane"]
         CA["Nested Podman application agents"]
-        AS["Outer bwrap: coding AgentServer"]
-        IP["Inner bwrap: provider task or CLI"]
+        SEL{"lite-sandbox"}
+        BS["bwrap: coding AgentServer"]
+        PS["Nested Podman: coding AgentServer"]
+        IP1["Inner bwrap: provider task or CLI"]
+        IP2["Container-local bwrap: provider task or CLI"]
 
-        CP --> AS
         CP --> CA
-        AS -->|"validated nested launch"| IP
+        CP --> SEL
+        SEL -->|"true"| BS
+        SEL -->|"false or missing"| PS
+        BS -->|"validated nested launch"| IP1
+        PS -->|"validated nested launch"| IP2
     end
 
-    AS --> A1["/workspace RW"]
-    AS --> A2["private persistent HOME RW"]
-    IP --> P1["/workspace RO"]
-    IP --> P2["selected WORKDIR RW overlay"]
-    IP --> P3["same agent HOME RW"]
+    BS --> A1["sandbox service ABI: /workspace RW, /home/agent RW"]
+    PS --> A2["existing container service ABI and volumes"]
+    IP1 --> P1["workspace RO, selected WORKDIR RW, HOME RW"]
+    IP2 --> P2["same effective provider policy"]
 ```
 
-The outer AgentServer is part of the trusted computing base. It needs the complete workspace RW because an inner bwrap cannot upgrade an outer RO mount to RW. This is the principal limitation and justification for nested access.
+The selected outer AgentServer is part of the trusted computing base. In sandbox mode it needs the complete workspace RW because an inner bwrap cannot upgrade an outer RO mount to RW. Container mode retains the established coding container filesystem, HOME, volume, relay, and lifecycle contract; it is a first-class selected runtime, not a compatibility fallback.
 
 The provider process is treated as untrusted. It receives a strictly narrower view constructed by the trusted adapter.
 
@@ -495,22 +506,25 @@ Without a persistent RW HOME, interactive login, session resume, model history, 
 
 ### 8.2 Ownership and mapping
 
-The target is one persistent HOME per agent instance or alias:
+The target is one persistent HOME per agent instance or alias and selected service runtime. The container path keeps its existing backing/layout. Sandbox mode uses a distinct versioned backing path so neither ABI interprets the other's state:
 
 ```text
-Box backing path:
+Container backing path (existing):
 /workspace/.data/<agent-or-alias>
 
-Sandbox path:
+Sandbox backing path (new, versioned):
+/workspace/.data/<agent-or-alias>.sandbox-v2
+
+Sandbox logical path:
 /home/agent
 
 Environment:
 HOME=/home/agent
 ```
 
-`/root` is a container convention, not a bwrap requirement. `/home/agent` makes the non-container model explicit. Migration may temporarily retain `/root` if a provider has a hard compatibility dependency, but the reason must be documented and tested.
+`/root` is a container convention, not a bwrap requirement. Sandbox service mode uses `/home/agent` directly and provides no `/root` shim. Container mode retains its native container HOME layout because that is the specified alternate runtime, not a legacy fallback. The shared provider policy must derive its HOME from the selected service runtime and must never confuse one mode's state ABI with the other.
 
-Different agents and aliases never share HOME. Concurrent tasks for the same alias require provider-specific concurrency testing because they may share databases and mutable configuration.
+Different agents, aliases, and service runtime modes never share HOME implicitly. Concurrent tasks for the same alias and mode require provider-specific concurrency testing because they share databases and mutable configuration. Moving credentials or sessions between modes is an explicit export/import operation outside this migration, never an automatic reader or fallback.
 
 ### 8.3 Persistent poisoning risk
 
@@ -586,12 +600,12 @@ sequenceDiagram
     participant U as Browser user
     participant A as Copilot
     participant M as Marketplace/runtime
-    participant S as AgentServer outer bwrap
+    participant S as Selected AgentServer runtime
     participant T as Provider nested bwrap
 
     U->>A: "Use opencodeAgent to implement X in projectDir"
     A->>M: ensure opencodeAgent is enabled and running
-    M->>S: start bwrap service if needed
+    M->>S: start mandatory bwrap or Podman service
     A->>S: MCP execute-task(prompt, projectDir)
     S->>S: canonicalize and validate projectDir
     S->>T: launch nested bwrap
@@ -599,7 +613,7 @@ sequenceDiagram
     S-->>A: asynchronous task handle/status
 ```
 
-Copilot selection and launch skills remain product-compatible. The runtime behind Marketplace changes from a nested Podman container to a bwrap AgentServer.
+Copilot selection and launch skills remain product-compatible. Marketplace starts exactly the runtime selected by `lite-sandbox`; task semantics remain the same in either mode.
 
 ### 10.2 Interactive CLI
 
@@ -608,15 +622,15 @@ sequenceDiagram
     participant H as Host user
     participant B as ploinky-box
     participant L as ploinky-local
-    participant S as AgentServer service bwrap
-    participant I as Interactive outer bwrap
+    participant S as Selected AgentServer service
+    participant I as Runtime-specific interactive launcher
     participant P as Provider nested bwrap
 
     H->>B: ploinky cli opencodeAgent
     B->>L: enter existing Box with TTY
     L->>L: resolve or auto-enable agent
     L->>S: explicit start and readiness check
-    L->>I: create interactive launcher with TTY
+    L->>I: create launcher for selected runtime with TTY
     I->>I: validate selected WORKDIR
     I->>P: launch manifest CLI through task policy
     Note over P: workspace RO<br/>WORKDIR RW<br/>HOME RW
@@ -643,19 +657,22 @@ It does not select Podman or bwrap, does not define interactivity, and does not 
 
 ## 11. Manifest contract
 
-The target coding-agent manifest needs no isolation class or policy matrix:
+The selector contract is universal. A dual-mode coding-agent manifest keeps its container declaration:
 
 ```json
 {
   "startup": "manual",
   "lite-sandbox": true,
+  "container": "docker.io/assistos/ploinky-node:<approved-tag-or-digest>",
   "cli": "<provider command>"
 }
 ```
 
 | Property | Meaning |
 | --- | --- |
-| `lite-sandbox: true` | use mandatory bwrap runtime |
+| `lite-sandbox: true` | use mandatory bwrap on Linux/Box or Seatbelt on macOS; ignore, do not validate for launch, and do not start/pull the dormant `container` declaration |
+| `lite-sandbox: false` or missing | use mandatory Podman and require a usable `container` declaration |
+| `container` | defines container mode; permitted alongside true so the selector alone can toggle a compatible agent |
 | `startup: "manual"` | on-demand lifecycle |
 | `cli` | provider command exists and can be launched interactively |
 
@@ -663,18 +680,18 @@ The following are intentionally not manifest properties:
 
 | Rejected property | Why it is unnecessary |
 | --- | --- |
-| `backend` | `lite-sandbox` already selects bwrap |
+| `backend` | `lite-sandbox` already selects the platform sandbox or Podman |
 | `class` | Ploinky does not need a `coding-worker` taxonomy to enforce this invariant |
 | `serviceWorkspace` | outer AgentServer policy is fixed by the runtime |
 | `taskWorkspace` | selected-directory policy belongs to the task launcher |
 | `network` | network is a runtime security decision |
 | `interactive` | inferred from `manifest.cli` |
 
-The existing `container` field must not be treated as the root filesystem for bwrap. Coding manifests should eventually remove it or mark it as deprecated compatibility metadata once dependency preparation no longer depends on it.
+The existing `container` field is never a root filesystem for sandbox mode. It remains active configuration for false/missing mode and dormant configuration for true mode. `true + container` is valid and required for a manifest that can be toggled between both modes.
 
-Before making `lite-sandbox` strict, audit every existing manifest. Remove the flag from image-dependent and non-target agents that must continue using Podman.
+Before making `lite-sandbox` strict, audit every existing manifest. Remove or set false on image-dependent agents that must continue using Podman. Do not encode an exact-name allowlist: any future agent may opt into true only after its complete sandbox-mode capability contract passes.
 
-No workspace switch may silently override `lite-sandbox: true` to Podman. If bwrap cannot run, the operator receives an actionable error.
+No workspace or platform switch may override the selector. A true launch cannot fall back to Podman, and a false/missing launch cannot fall forward to bwrap. A selected-backend failure produces an actionable error before route publication.
 
 ## 12. Lifecycle, status, and logging
 
@@ -715,7 +732,7 @@ Logs are captured by the trusted launcher from stdout/stderr. Provider processes
 | Box stop | terminate bwrap services and tasks before stopping the outer container |
 | crash recovery | reject stale PID/generation records and clean orphaned processes |
 
-No Podman container should appear in status or logs for a migrated coding agent. Non-coding agents remain visible as containers.
+Status and logs report the selected boundary truthfully. In true mode no Podman container, image pull, or engine event may appear for the coding agent. In false/missing mode the exact expected coding container must appear and no outer coding bwrap service may be reported.
 
 ## 13. Key architecture decisions
 
@@ -723,8 +740,8 @@ No Podman container should appear in status or logs for a migrated coding agent.
 | --- | --- | --- |
 | D1 | retain one outer `ploinky-box` container | preserves distribution, volumes, ports, rootless Podman, and macOS support |
 | D2 | keep a hybrid Podman plus bwrap runtime inside the Box | image-dependent services still need containers |
-| D3 | repurpose `lite-sandbox: true` as the strict bwrap selector | avoids a new configuration hierarchy |
-| D4 | never fall back from requested bwrap to Podman | the active security boundary must be truthful |
+| D3 | use `lite-sandbox` as the universal binary runtime selector | true selects the platform sandbox; false/missing selects Podman without an agent-name allowlist |
+| D4 | never cross-fallback between selected runtimes | the active security boundary and operational dependency must be truthful |
 | D5 | keep coding AgentServers on demand with `startup: "manual"` | matches existing browser and CLI product behavior |
 | D6 | trust the outer AgentServer and give it `/workspace` RW | required to create arbitrary narrower RW child mounts with nested bwrap |
 | D7 | run every actual provider CLI/task in nested bwrap | one effective provider boundary for browser and interactive use |
@@ -734,33 +751,38 @@ No Podman container should appear in status or logs for a migrated coding agent.
 | D11 | reuse Node/npm from the Box through a RO mount | no duplicated Node installation per sandbox |
 | D12 | bring Codex under the same bwrap policy as OpenCode and PI | provider-native sandboxing is not the Ploinky boundary |
 | D13 | keep network policy outside manifests | network is a platform invariant and still requires a rollout decision |
-| D14 | migrate only coding agents in the first rollout | limits blast radius and preserves specialized container workloads |
+| D14 | prove sandbox mode first for coding agents while specialized services remain container-selected | limits blast radius without narrowing the generic selector contract |
+| D15 | permit `container` alongside true and ignore it only for the sandbox launch | the same coding manifest can be toggled between both supported modes |
+| D16 | retain the established container service ABI in false/missing mode | container execution remains target behavior, not backwards compatibility |
+| D17 | place all feature work on `ploinky-bwrap` created from `ploinky-proxy` | isolates the implementation while preserving the baseline branch non-destructively |
 
 ## 14. Implementation impact and sequencing
 
-All affected repositories use the `ploinky-proxy` branch. Existing relevant uncommitted work must be reviewed, committed coherently, and pushed without overwriting unrelated work.
+All affected repositories use `ploinky-bwrap`, created from `ploinky-proxy`. Source, managed-checkout refreshes, image provenance, tests, and deployment evidence must name exact `ploinky-bwrap` commits. Existing relevant uncommitted work is reviewed, committed coherently, and pushed without overwriting unrelated work. `ploinky-proxy` remains a clean baseline through normal revert history; it is never force-rewritten.
 
 | Phase | Primary repositories | Change | Gate |
 | --- | --- | --- | --- |
-| 0. Inventory | all manifests and managed checkouts | classify every `lite-sandbox` use and align source versus managed manifests | no specialized-image agent will be selected for bwrap |
+| 0. Inventory and branch gate | all manifests, managed checkouts, and repository policies | classify every `lite-sandbox` use; align source versus managed manifests; update branch-specific gates from the old feature branch to `ploinky-bwrap` | no specialized-image agent is sandbox-selected; all feature commits and refresh sources are exact new-branch commits |
 | 1. Box capability | `container-image-builds`, `ploinky` | install bwrap/tooling and add exact native nested probes | amd64, arm64, Podman Machine |
-| 2. Runtime selection | `ploinky` | make `lite-sandbox` strict in Box; remove forced-Podman and fallback paths | unit tests prove fail-closed behavior |
-| 3. Outer service | `ploinky` | adapt bwrap mount policy, HOME mapping, lifecycle, readiness, status, logs | dummy AgentServer starts and recovers without a container |
+| 2. Runtime selection | `ploinky` | make the universal selector strict in Box; remove forced-Podman and cross-runtime fallback paths; permit dormant container metadata in true mode | unit tests prove true→sandbox, false/missing→Podman, and selected-backend fail-closed behavior |
+| 3. Outer service | `ploinky` | adapt bwrap mount policy, HOME mapping, lifecycle, readiness, status, logs while retaining the existing container path | the same dummy agent passes in both explicitly selected modes |
 | 4. Router identity | `ploinky`, Agent runtime, possibly `proxies` | generation-scoped bwrap identity and route/relay support | authenticated MCP round-trip without master secret exposure |
 | 5. Shared task policy | `AchillesCLI`, possibly promoted into `ploinky` shared code | canonical path validation, workspace RO plus WORKDIR RW, protected masks, HOME, env | adversarial mount/path tests |
-| 6. Provider migration | `AchillesCLI` | OpenCode/PI alignment, Codex nested wrapper, immutable runtime handling | execute, continue, login, cancellation for all three |
+| 6. Provider migration | `AchillesCLI` | OpenCode/PI alignment, Codex nested wrapper, immutable runtime handling, and runtime-context-aware HOME/policy construction | execute, continue, login, and cancellation pass for all three in both modes |
 | 7. Interactive CLI | `ploinky`, `AchillesCLI` | workdir selection, PTY, manifest CLI wrapper, cleanup | all three CLIs from arbitrary subfolders |
 | 8. Copilot E2E | `AchillesCLI`, `AssistOSExplorer/explorer`, Ploinky tests | preserve deterministic browser delegation | browser prompts create expected files in selected projects |
 | 9. Hardening | runtime and Box image | concurrent HOME behavior, private networking if adopted, rollback telemetry | security and recovery test matrix passes |
 
-OpenCode and PI task-sandbox code can be retained for the first nested rollout. A later refactor may centralize their duplicated policy builder, but centralization is not a prerequisite for proving the architecture. The first goal is policy equivalence and removal of coding-agent Podman containers.
+OpenCode and PI task-sandbox code can be retained for the first nested rollout. A later refactor may centralize their duplicated policy builder, but centralization is not a prerequisite for proving the architecture. The first goal is provider-policy equivalence plus honest dual-mode runtime selection; container absence is required only when true is selected.
 
 ## 15. Acceptance tests
 
 | Category | Required proof |
 | --- | --- |
-| runtime selection | `lite-sandbox: true` produces bwrap and never silently falls back |
-| container absence | no Podman container exists for OpenCode, Codex, or PI AgentServers |
+| runtime selection | true produces bwrap/Seatbelt; false/missing produces Podman; neither selection silently crosses to the other backend |
+| dual-mode manifests | each coding manifest retains a valid container definition and can run successfully after changing only `lite-sandbox` |
+| sandbox-mode absence | in true mode no Podman container, image pull, or engine event exists for OpenCode, Codex, or PI AgentServers |
+| container-mode presence | in false/missing mode the exact expected coding container runs and no outer coding bwrap service is created |
 | coexistence | Explorer and specialized service containers still work |
 | Box capability | nested user, mount, PID, IPC, and UTS namespaces work under the production Box contract |
 | workdir | an arbitrary valid subfolder can be selected and is RW |
@@ -789,7 +811,7 @@ OpenCode and PI task-sandbox code can be retained for the first nested rollout. 
 | Open | whether sibling user projects being readable is acceptable when the provider has network access |
 | Open | shared Box network for the first rollout versus private egress from the start |
 | Open | exact credential transport for bwrap AgentServer Router/MCP identity |
-| Open | whether `/home/agent` can replace `/root` immediately for all providers |
+| Resolved | sandbox mode uses `/home/agent` without a `/root` shim; container mode retains its native HOME ABI; state is never mixed across the two runtime layouts |
 | Open | concurrency semantics when multiple tasks share one persistent HOME |
 | Native test required | nested bwrap and private `/proc` in the exact Box image on all target architectures |
 | Native test required | actual minimum toolchain for supported OpenCode, Codex, and PI versions |
@@ -819,7 +841,7 @@ OpenCode and PI task-sandbox code can be retained for the first nested rollout. 
 
 ## 18. Conclusion
 
-The clean migration is not a general replacement of every nested container. It is a strict bwrap path for coding agents inside the existing Box, selected by the already present `lite-sandbox: true` flag.
+The clean migration is not a general replacement of every nested container. It establishes one universal, strict selector inside the existing Box: true means the platform sandbox and false/missing means Podman. The first proved sandbox-compatible workload is the coding-agent set; specialized image-dependent services stay container-selected.
 
 The long-lived coding AgentServer is trusted and receives the complete workspace RW so it can launch work in any requested directory. Every actual OpenCode, Codex, or PI process runs in nested bwrap with a narrower and consistent contract: workspace RO, exact launch directory RW, private persistent HOME RW, immutable runtime RO, and Ploinky control data hidden.
 
@@ -830,4 +852,4 @@ Browser prompt -> Copilot -> coding AgentServer -> nested provider task
 ploinky cli <coding-agent> -> interactive launcher -> nested provider CLI
 ```
 
-It also keeps the manifest small, gives `startup` one clear lifecycle role, reuses the Box-provided Node runtime, removes coding-agent Podman containers, and leaves specialized application services on the container runtime they require.
+It also keeps the manifest small, gives `startup` one clear lifecycle role, uses the Box-provided Node runtime in sandbox mode and the pinned coding-image runtime in container mode, removes coding-agent Podman containers only when sandbox mode is selected, preserves coding-agent container execution when false/missing is selected, and leaves specialized application services on the container runtime they require.
