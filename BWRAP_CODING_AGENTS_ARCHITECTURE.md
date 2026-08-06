@@ -1,8 +1,8 @@
 # Dual-Runtime Architecture for Coding Agents in Ploinky Box
 
-Analysis date: 2026-08-04; revised 2026-08-05
+Analysis date: 2026-08-04; revised 2026-08-06
 
-Status: proposed target architecture; not yet implemented
+Status: runtime architecture implemented through Phase 10E; immutable image rebuild and managed drill remain Phase 10F
 
 ## 1. Executive summary
 
@@ -84,6 +84,33 @@ The terms below distinguish facts from design:
 | Open | requires a product decision or native runtime test |
 
 Existing dirty worktrees must be preserved. Implementation changes across affected repositories belong on `ploinky-bwrap`, created from `ploinky-proxy`. `ploinky-proxy` remains the preserved baseline and receives no feature implementation. Relevant work is committed and pushed coherently on `ploinky-bwrap`; unrelated or ambiguous changes must not be silently mixed into the migration.
+
+### 2.1 Immutable managed-release selection
+
+Phase 10E adds one explicit managed-release authority at the public Box boundary: `--local-release-descriptor <canonical-json>`. Loose Box-image, Node-image, media-port, release-generation, and AgentLib inputs are not release inputs and are rejected when the descriptor is present. The canonical `ploinky-release-v1` descriptor contains exactly these operator-supplied fields, plus its derived generation:
+
+| Field group | Exact contract |
+| --- | --- |
+| schema | `ploinky-release-v1` |
+| Box artifact | raw local 64-hex image ID and `sha256:` digest |
+| Node artifact | raw local 64-hex image ID and `sha256:` digest |
+| source boundaries | 40-hex artifact-source commit and 40-hex live controller-source commit |
+| AgentLib | `dd94929443033c0a43bf7569068ec1d2926dba35` |
+| network generation | distinct Router and media host ports; media port `7882` is forbidden |
+| ownership | `releaseGeneration`, derived as SHA-256 over the canonical ordered input fields |
+
+The two source identities are intentional. `artifactSourceSha` is the Ploinky source baked into and attested by the exact Box/Node images. `controllerSourceSha` is the current Ploinky source interpreting the descriptor. This lets current controller code run either the previous or current artifact pair without running old supervisor code. Admission requires the live controller HEAD, its tracked AgentLib gitlink/package/Box lock, and the artifact commit's corresponding three AgentLib boundaries to agree with the descriptor. A single ambiguous “source SHA” claim is insufficient. Every Phase 10F Box and Node candidate also carries `io.assistos.ploinky.agentlib-sha`, records the same value in native evidence, and annotates the candidate index. The accepted Phase 10C rollback artifacts predate that label; their fixed IDs/digests plus the artifact commit's three-way AgentLib proof are the only accepted pre-label evidence path.
+
+For qualifying coding manifests, defined by the literal `docker.io/assistos/ploinky-node:24-bookworm-tools` declaration plus `containerSecurity.nestedBwrap: true`, selection is exact and independent of `llmRuntime.enabled` and `PLOINKY_LLM_AGENT_IMAGE`:
+
+| Selector | Managed-release behavior |
+| --- | --- |
+| `lite-sandbox: false` or missing | inspect the descriptor's raw local Node ID exactly once, require its exact ID, digest, and artifact-source label, then launch only that ID; never pull, tag, or fall back |
+| `lite-sandbox: true` | select Bubblewrap inside Linux/Box or Seatbelt on macOS and leave the Node artifact dormant; do not inspect, pull, create, start, lease, or otherwise activate it |
+
+The descriptor crosses the Box boundary as one canonical value. Its derived generation is copied into runtime registry records, network labels, preparation leases, route capabilities, provider-task owners, status, cancellation, reconcile, and cleanup evidence. Equality is symmetric, including the empty non-release generation, so a release cutover or rollback cannot adopt mixed ownership. Previous and current descriptors must also use distinct Router and media host ports.
+
+Phase 10A is retired as a managed rollback input because it cannot represent the exact Box/media contract. The accepted Phase 10C pair is rollback-only after Phase 10F creates a new current pair: Box `55c3ea330884b09ce80bb0d3a3ba9762fee3ad353c89f062c7321a4d9c2258f8` at `sha256:aabe3e79dca2d7e89bbe5fa08a704401db7c242b6e68d54ee14ee4b35d3b9b19`, and Node `083efb041797f93b230efa260ac490bf4b3266852a34bf92fce36f7824219d38` at `sha256:3f72d71eeb783367047701f15e3e4dcbd233caa567b77e21428c89424d66d692`, with artifact source `4e963bc7633dff333594d0d88b5ee5ed53dfa71e`. Until Phase 10F rebuilds and attests a new pair, these artifacts are stale as “current” and must not be promoted or retagged.
 
 ## 3. Current architecture
 
